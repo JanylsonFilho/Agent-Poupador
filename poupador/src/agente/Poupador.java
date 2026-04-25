@@ -8,6 +8,7 @@ import algoritmo.ProgramaPoupador;
 import controle.Constantes;
 
 public class Poupador extends ProgramaPoupador {
+    private static final double TOLERANCIA_RISCO = 1.0e-9;
 
     private static final double PESO_BASE_SEGURANCA = 0.35;
     private static final double PESO_BASE_OLFATO = 0.25;
@@ -91,7 +92,11 @@ public class Poupador extends ProgramaPoupador {
             return false;
         }
 
-        return celula != Constantes.numeroPoupador01 && celula != Constantes.numeroPoupador02;
+        if (celula != Constantes.numeroPoupador01 && celula != Constantes.numeroPoupador02) {
+            return !isLadrao(celula);
+        }
+
+        return false;
     }
 
     private static boolean isLadrao(int celula) {
@@ -194,7 +199,7 @@ public class Poupador extends ProgramaPoupador {
     private static final class HeuristicaSeguranca implements Heuristica {
         @Override
         public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] riscosVisuais = calcularRiscosVisuais(contexto);
+            double[] riscosVisuais = contexto.calcularRiscosVisuais();
             double[] pesos = new double[MOVIMENTOS.length];
 
             for (int i = 0; i < MOVIMENTOS.length; i++) {
@@ -211,54 +216,12 @@ public class Poupador extends ProgramaPoupador {
             double peso = PESO_BASE_SEGURANCA * contraste * ganho;
             return new ResultadoHeuristica(roleta, peso);
         }
-
-        private double[] calcularRiscosVisuais(Contexto contexto) {
-            double[] riscos = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!contexto.isMovimentoValido(i)) {
-                    riscos[i] = 1.0;
-                    continue;
-                }
-
-                double produtoSeguranca = 1.0;
-                Movimento movimento = contexto.getMovimento(i);
-
-                for (int indiceVisao = 0; indiceVisao < contexto.getVisao().length; indiceVisao++) {
-                    if (!isLadrao(contexto.getCelulaVisao(indiceVisao))) {
-                        continue;
-                    }
-
-                    int[] offsetLadrao = OFFSETS_VISAO[indiceVisao];
-                    int distancia = Math.abs(movimento.getDx() - offsetLadrao[0]) + Math.abs(movimento.getDy() - offsetLadrao[1]);
-                    double ameaca = calcularAmeacaSeguranca(distancia, contexto.getImunidadeNormalizada());
-                    produtoSeguranca *= (1.0 - ameaca);
-                }
-
-                riscos[i] = 1.0 - produtoSeguranca;
-            }
-
-            return riscos;
-        }
-
-        private double calcularAmeacaSeguranca(int distancia, double imunidadeNormalizada) {
-            double vulnerabilidade = 1.0 - imunidadeNormalizada;
-            if (vulnerabilidade == 0.0) {
-                return 0.0;
-            }
-
-            if (distancia <= 1) {
-                return vulnerabilidade;
-            }
-
-            return vulnerabilidade * (1.0 / distancia);
-        }
     }
 
     private static final class HeuristicaOlfato implements Heuristica {
         @Override
         public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] riscosOlfativos = calcularRiscosOlfativos(contexto);
+            double[] riscosOlfativos = contexto.calcularRiscosOlfativos();
             double[] pesos = new double[MOVIMENTOS.length];
 
             for (int i = 0; i < MOVIMENTOS.length; i++) {
@@ -274,36 +237,6 @@ public class Poupador extends ProgramaPoupador {
             double ganho = 1.0 + maiorValor(riscosOlfativos);
             double peso = PESO_BASE_OLFATO * contraste * ganho;
             return new ResultadoHeuristica(roleta, peso);
-        }
-
-        private double[] calcularRiscosOlfativos(Contexto contexto) {
-            double[] riscos = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!contexto.isMovimentoValido(i)) {
-                    riscos[i] = 1.0;
-                    continue;
-                }
-
-                double produtoSeguranca = 1.0;
-                Movimento movimento = contexto.getMovimento(i);
-
-                for (int indiceOlfato = 0; indiceOlfato < contexto.getOlfatoLadrao().length; indiceOlfato++) {
-                    double intensidade = calcularIntensidadeOlfato(contexto.getMarcaOlfatoLadrao(indiceOlfato));
-                    if (intensidade == 0.0) {
-                        continue;
-                    }
-
-                    int[] offsetCheiro = OFFSETS_OLFATO[indiceOlfato];
-                    int distancia = Math.abs(movimento.getDx() - offsetCheiro[0]) + Math.abs(movimento.getDy() - offsetCheiro[1]);
-                    double ameaca = intensidade * calcularAmeacaPorDistancia(distancia);
-                    produtoSeguranca *= (1.0 - ameaca);
-                }
-
-                riscos[i] = 1.0 - produtoSeguranca;
-            }
-
-            return riscos;
         }
     }
 
@@ -462,6 +395,134 @@ public class Poupador extends ProgramaPoupador {
             return Math.abs(proximaPosicao.x - Constantes.posicaoBanco.x) + Math.abs(proximaPosicao.y - Constantes.posicaoBanco.y);
         }
 
+        private double[] calcularRiscosVisuais() {
+            double[] riscos = new double[MOVIMENTOS.length];
+
+            for (int i = 0; i < MOVIMENTOS.length; i++) {
+                if (!isMovimentoValido(i)) {
+                    riscos[i] = 1.0;
+                    continue;
+                }
+
+                double produtoSeguranca = 1.0;
+                Movimento movimento = getMovimento(i);
+
+                for (int indiceVisao = 0; indiceVisao < visao.length; indiceVisao++) {
+                    if (!isLadrao(visao[indiceVisao])) {
+                        continue;
+                    }
+
+                    int[] offsetLadrao = OFFSETS_VISAO[indiceVisao];
+                    int distancia = Math.abs(movimento.getDx() - offsetLadrao[0]) + Math.abs(movimento.getDy() - offsetLadrao[1]);
+                    double ameaca = calcularAmeacaSeguranca(distancia);
+                    produtoSeguranca *= (1.0 - ameaca);
+                }
+
+                riscos[i] = 1.0 - produtoSeguranca;
+            }
+
+            return riscos;
+        }
+
+        private double[] calcularRiscosOlfativos() {
+            double[] riscos = new double[MOVIMENTOS.length];
+
+            for (int i = 0; i < MOVIMENTOS.length; i++) {
+                if (!isMovimentoValido(i)) {
+                    riscos[i] = 1.0;
+                    continue;
+                }
+
+                double produtoSeguranca = 1.0;
+                Movimento movimento = getMovimento(i);
+
+                for (int indiceOlfato = 0; indiceOlfato < olfatoLadrao.length; indiceOlfato++) {
+                    double intensidade = calcularIntensidadeOlfato(olfatoLadrao[indiceOlfato]);
+                    if (intensidade == 0.0) {
+                        continue;
+                    }
+
+                    int[] offsetCheiro = OFFSETS_OLFATO[indiceOlfato];
+                    int distancia = Math.abs(movimento.getDx() - offsetCheiro[0]) + Math.abs(movimento.getDy() - offsetCheiro[1]);
+                    double ameaca = intensidade * calcularAmeacaPorDistancia(distancia);
+                    produtoSeguranca *= (1.0 - ameaca);
+                }
+
+                riscos[i] = 1.0 - produtoSeguranca;
+            }
+
+            return riscos;
+        }
+
+        private boolean[] getMovimentosSegurosPrioritarios() {
+            boolean[] permitidos = new boolean[MOVIMENTOS.length];
+            double[] riscosVisuais = calcularRiscosVisuais();
+            double menorRiscoVisual = Double.POSITIVE_INFINITY;
+
+            for (int i = 0; i < MOVIMENTOS.length; i++) {
+                if (!isMovimentoValido(i)) {
+                    continue;
+                }
+
+                menorRiscoVisual = Math.min(menorRiscoVisual, riscosVisuais[i]);
+            }
+
+            if (Double.isInfinite(menorRiscoVisual)) {
+                return permitidos;
+            }
+
+            int quantidadePermitidos = 0;
+            for (int i = 0; i < MOVIMENTOS.length; i++) {
+                if (!isMovimentoValido(i)) {
+                    continue;
+                }
+
+                if (riscosVisuais[i] <= (menorRiscoVisual + TOLERANCIA_RISCO)) {
+                    permitidos[i] = true;
+                    quantidadePermitidos++;
+                }
+            }
+
+            if (quantidadePermitidos <= 1) {
+                return permitidos;
+            }
+
+            double[] riscosOlfativos = calcularRiscosOlfativos();
+            double menorRiscoOlfativo = Double.POSITIVE_INFINITY;
+
+            for (int i = 0; i < MOVIMENTOS.length; i++) {
+                if (!permitidos[i]) {
+                    continue;
+                }
+
+                menorRiscoOlfativo = Math.min(menorRiscoOlfativo, riscosOlfativos[i]);
+            }
+
+            boolean[] refinados = new boolean[MOVIMENTOS.length];
+            for (int i = 0; i < MOVIMENTOS.length; i++) {
+                if (!permitidos[i]) {
+                    continue;
+                }
+
+                refinados[i] = riscosOlfativos[i] <= (menorRiscoOlfativo + TOLERANCIA_RISCO);
+            }
+
+            return refinados;
+        }
+
+        private double calcularAmeacaSeguranca(int distancia) {
+            double vulnerabilidade = 1.0 - getImunidadeNormalizada();
+            if (vulnerabilidade == 0.0) {
+                return 0.0;
+            }
+
+            if (distancia <= 1) {
+                return vulnerabilidade;
+            }
+
+            return vulnerabilidade * (1.0 / distancia);
+        }
+
         private double getCargaFinanceira() {
             return Math.min(1.0, numeroMoedas / 10.0);
         }
@@ -533,9 +594,23 @@ public class Poupador extends ProgramaPoupador {
 
         private static double[] criarBase(Contexto contexto) {
             double[] pesos = new double[MOVIMENTOS.length];
+            boolean[] movimentosPriorizados = contexto.getMovimentosSegurosPrioritarios();
+            boolean existeMovimentoPriorizado = false;
+
+            for (int i = 0; i < movimentosPriorizados.length; i++) {
+                if (movimentosPriorizados[i]) {
+                    existeMovimentoPriorizado = true;
+                    break;
+                }
+            }
 
             for (int i = 0; i < MOVIMENTOS.length; i++) {
-                pesos[i] = contexto.isMovimentoValido(i) ? 1.0 : 0.0;
+                if (!contexto.isMovimentoValido(i)) {
+                    pesos[i] = 0.0;
+                    continue;
+                }
+
+                pesos[i] = (!existeMovimentoPriorizado || movimentosPriorizados[i]) ? 1.0 : 0.0;
             }
 
             return normalizar(pesos);
@@ -572,10 +647,14 @@ public class Poupador extends ProgramaPoupador {
                 for (int i = 0; i < pesosCombinados.length; i++) {
                     pesosCombinados[i] *= roletaSeguranca[i];
                 }
+            }
 
-                if (soma(pesosCombinados) == 0.0) {
-                    return roletaBase;
-                }
+            for (int i = 0; i < pesosCombinados.length; i++) {
+                pesosCombinados[i] *= roletaBase[i];
+            }
+
+            if (soma(pesosCombinados) == 0.0) {
+                return roletaBase;
             }
 
             return normalizar(pesosCombinados);

@@ -226,12 +226,28 @@ Interpretação:
 - se a heurística gerar roleta uniforme, então `Kk = 0` e seu peso efetivo desaparece naturalmente;
 - se a heurística diferenciar as direções, seu peso cresce conforme sua relevância e sua hierarquia base.
 
+## Filtro de admissibilidade
+
+Antes da roleta final, a segurança atua como filtro duro.
+
+Definição:
+
+1. entre todos os movimentos válidos, mantém-se apenas o conjunto com menor `Rvis(d)`;
+2. se ainda houver empate, mantém-se apenas o subconjunto com menor `Rolf(d)`;
+3. somente esse conjunto admissível segue para a composição probabilística.
+
+Interpretação:
+
+- segurança não é apenas "mais um peso";
+- se existir um movimento estritamente mais seguro, o movimento dominado sai da decisão;
+- assim, oportunidade de moeda, banco, pastilha ou exploração nunca justifica caminhar para um roubo evitável.
+
 ## Roleta final
 
 A roleta final é calculada por:
 
 ```text
-Pfinal(d) = normalize( ε * Pbase(d)
+Pfinal(d) = normalize( ε * Padm(d)
                      + wseg(din) * Pseg(d)
                      + wolf(din) * Polf(d)
                      + wvis(din) * Pvis(d)
@@ -240,16 +256,17 @@ Pfinal(d) = normalize( ε * Pbase(d)
                      + wpas(din) * Ppas(d) )
 ```
 
-onde `ε` é uma constante pequena, usada apenas para garantir uma saída válida quando todas as heurísticas estiverem uniformes ao mesmo tempo.
+onde `Padm(d)` é a base uniforme apenas sobre os movimentos admissíveis e `ε` é uma constante pequena, usada apenas para garantir uma saída válida quando todas as heurísticas estiverem uniformes ao mesmo tempo.
 
 ## Interpretação final
 
 O agente não escolhe por regra fixa. Ele:
 
 1. calcula as roletas locais de cada heurística;
-2. mede o contraste de cada uma;
-3. ajusta os pesos dinamicamente;
-4. combina tudo em uma roleta final;
-5. escolhe o movimento a partir dessa distribuição.
+2. aplica o filtro duro de admissibilidade pela segurança;
+3. mede o contraste de cada uma;
+4. ajusta os pesos dinamicamente;
+5. combina tudo em uma roleta final;
+6. escolhe o movimento a partir dessa distribuição.
 
-Assim, quando uma heurística não distingue nenhuma direção, ela continua formalmente presente, mas sua influência desaparece de forma natural, sem precisar ser desligada por condição externa.
+Assim, quando uma heurística não distingue nenhuma direção, ela continua formalmente presente, mas sua influência desaparece de forma natural. A exceção é a segurança: se houver dominância de risco, ela elimina o movimento inseguro antes da composição.
