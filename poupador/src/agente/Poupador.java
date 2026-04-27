@@ -17,8 +17,7 @@ public class Poupador extends ProgramaPoupador {
     private static final double PESO_BANCO = 2.2;
     private static final double PESO_MOEDA = 2.0;
     private static final double PESO_PASTILHA = 1.2;
-    private static final double EXPOENTE_PARADO_FALLBACK = 4.0;
-
+    private static final double PESO_ESTAGNACAO_PARADO = 0.8;
     private static final int[][] OFFSETS_VISAO = new int[][] {
         { -2, -2 }, { -1, -2 }, { 0, -2 }, { 1, -2 }, { 2, -2 },
         { -2, -1 }, { -1, -1 }, { 0, -1 }, { 1, -1 }, { 2, -1 },
@@ -42,18 +41,23 @@ public class Poupador extends ProgramaPoupador {
     };
 
     private final Map<Point, Integer> lugaresVisitados = new HashMap<Point, Integer>();
+    private Point ultimaPosicaoObservada;
+    private int permanenciasConsecutivas;
 
     @Override
     public int acao() {
-        registrarVisita(sensor.getPosicao());
+        Point posicaoAtual = sensor.getPosicao();
+        atualizarPermanencia(posicaoAtual);
+        registrarVisita(posicaoAtual);
 
         Contexto contexto = new Contexto(
             sensor.getVisaoIdentificacao(),
             sensor.getAmbienteOlfatoLadrao(),
-            sensor.getPosicao(),
+            posicaoAtual,
             sensor.getNumeroDeMoedas(),
             sensor.getNumeroJogadasImunes(),
-            lugaresVisitados
+            lugaresVisitados,
+            permanenciasConsecutivas
         );
 
         double[] scores = calcularScores(contexto);
@@ -63,16 +67,21 @@ public class Poupador extends ProgramaPoupador {
         return acaoEscolhida;
     }
 
+    private void atualizarPermanencia(Point posicaoAtual) {
+        if (ultimaPosicaoObservada != null && ultimaPosicaoObservada.equals(posicaoAtual)) {
+            permanenciasConsecutivas++;
+        } else {
+            permanenciasConsecutivas = 0;
+        }
+
+        ultimaPosicaoObservada = new Point(posicaoAtual);
+    }
+
     private double[] calcularScores(Contexto contexto) {
         double[] scores = new double[ACOES.length];
 
         for (int i = 0; i < ACOES.length; i++) {
             Acao acao = ACOES[i];
-            if (acao.isParado()) {
-                scores[i] = 0.0;
-                continue;
-            }
-
             double score = avaliarAdmissibilidade(contexto, acao);
 
             if (Double.isInfinite(score) && score < 0.0) {
@@ -85,6 +94,7 @@ public class Poupador extends ProgramaPoupador {
             score += heuristicaBanco(contexto, acao);
             score += heuristicaMoeda(contexto, acao);
             score += heuristicaPastilha(contexto, acao);
+            score += heuristicaEstagnacao(contexto, acao);
 
             scores[i] = score;
         }
@@ -93,7 +103,7 @@ public class Poupador extends ProgramaPoupador {
     }
 
     private double avaliarAdmissibilidade(Contexto contexto, Acao acao) {
-        if (!acao.isParado() && !contexto.isDestinoValido(acao)) {
+        if (!contexto.isDestinoValido(acao)) {
             return ADMISSIBILIDADE_NEGADA;
         }
 
@@ -133,37 +143,42 @@ public class Poupador extends ProgramaPoupador {
             * contexto.getAtracaoVisivel(acao, Constantes.numeroPastinhaPoder);
     }
 
+    private double heuristicaEstagnacao(Contexto contexto, Acao acao) {
+        if (!acao.isParado()) {
+            return 0.0;
+        }
+
+        return -PESO_ESTAGNACAO_PARADO * contexto.getPermanenciasConsecutivas();
+    }
+
     private double[] converterScoresEmPesos(double[] scores) {
         double[] pesos = new double[scores.length];
-        double maiorScoreDirecional = Double.NEGATIVE_INFINITY;
+        double maiorScore = Double.NEGATIVE_INFINITY;
 
-        for (int i = 1; i < scores.length; i++) {
+        for (int i = 0; i < scores.length; i++) {
             if (Double.isInfinite(scores[i]) && scores[i] < 0.0) {
                 continue;
             }
 
-            maiorScoreDirecional = Math.max(maiorScoreDirecional, scores[i]);
+            maiorScore = Math.max(maiorScore, scores[i]);
         }
 
-        if (Double.isInfinite(maiorScoreDirecional)) {
+        if (Double.isInfinite(maiorScore)) {
             pesos[0] = 1.0;
             return pesos;
         }
 
-        double somaDirecoes = 0.0;
-        for (int i = 1; i < scores.length; i++) {
+        double soma = 0.0;
+        for (int i = 0; i < scores.length; i++) {
             if (Double.isInfinite(scores[i]) && scores[i] < 0.0) {
                 pesos[i] = 0.0;
                 continue;
             }
 
-            pesos[i] = Math.exp(scores[i] - maiorScoreDirecional) + EPSILON;
-            somaDirecoes += pesos[i];
+            pesos[i] = Math.exp(scores[i] - maiorScore) + EPSILON;
+            soma += pesos[i];
         }
 
-        pesos[0] = 1.0 / Math.pow(1.0 + somaDirecoes, EXPOENTE_PARADO_FALLBACK);
-
-        double soma = pesos[0] + somaDirecoes;
         for (int i = 0; i < pesos.length; i++) {
             pesos[i] /= soma;
         }
@@ -222,6 +237,8 @@ public class Poupador extends ProgramaPoupador {
                 linha.append(" past=").append(formatarDouble(contexto.getAtracaoVisivel(acao, Constantes.numeroPastinhaPoder)));
                 linha.append(" rVis=").append(formatarDouble(contexto.calcularRiscoVisual(acao)));
                 linha.append(" rOlf=").append(formatarDouble(contexto.calcularRiscoOlfativo(acao)));
+            } else {
+                linha.append(" estag=").append(contexto.getPermanenciasConsecutivas());
             }
             System.out.println(linha.toString());
         }
@@ -318,6 +335,7 @@ public class Poupador extends ProgramaPoupador {
         private final int numeroMoedas;
         private final int numeroJogadasImunes;
         private final Map<Point, Integer> lugaresVisitados;
+        private final int permanenciasConsecutivas;
 
         private Contexto(
             int[] visao,
@@ -325,7 +343,8 @@ public class Poupador extends ProgramaPoupador {
             Point posicao,
             int numeroMoedas,
             int numeroJogadasImunes,
-            Map<Point, Integer> lugaresVisitados
+            Map<Point, Integer> lugaresVisitados,
+            int permanenciasConsecutivas
         ) {
             this.visao = visao;
             this.olfatoLadrao = olfatoLadrao;
@@ -333,9 +352,14 @@ public class Poupador extends ProgramaPoupador {
             this.numeroMoedas = numeroMoedas;
             this.numeroJogadasImunes = numeroJogadasImunes;
             this.lugaresVisitados = lugaresVisitados;
+            this.permanenciasConsecutivas = permanenciasConsecutivas;
         }
 
         private boolean isDestinoValido(Acao acao) {
+            if (acao.isParado()) {
+                return true;
+            }
+
             if (visao[acao.indiceVisao] == Constantes.numeroPastinhaPoder && numeroMoedas < Constantes.custoPastinha) {
                 return false;
             }
@@ -344,6 +368,10 @@ public class Poupador extends ProgramaPoupador {
 
         private Point getPosicaoAtual() {
             return new Point(posicao);
+        }
+
+        private int getPermanenciasConsecutivas() {
+            return permanenciasConsecutivas;
         }
 
         private int getVisitas(Acao acao) {
@@ -423,7 +451,9 @@ public class Poupador extends ProgramaPoupador {
 
         private double getBonusDeposito(Acao acao) {
             Point destino = getPosicaoDestino(acao);
-            return destino.equals(Constantes.posicaoBanco) ? 1.0 : 0.0;
+            return destino.equals(Constantes.posicaoBanco)
+                && !posicao.equals(Constantes.posicaoBanco)
+                && numeroMoedas > 0 ? 1.0 : 0.0;
         }
 
         private double getAtracaoVisivel(Acao acao, int tipoAlvo) {
@@ -468,9 +498,9 @@ public class Poupador extends ProgramaPoupador {
 
             for (int i = 0; i < ACOES.length; i++) {
                 Acao candidata = ACOES[i];
-                if ((!candidata.isParado() && !isDestinoValido(candidata)) || isCapturaImediataEvitable(candidata)) {
-                    continue;
-                }
+            if (!isDestinoValido(candidata) || isCapturaImediataEvitable(candidata)) {
+                continue;
+            }
 
                 double massa = getMassaExploracao(candidata);
                 soma += massa;
@@ -543,7 +573,7 @@ public class Poupador extends ProgramaPoupador {
 
             for (int i = 0; i < ACOES.length; i++) {
                 Acao candidata = ACOES[i];
-                if (!candidata.isParado() && !isDestinoValido(candidata)) {
+                if (!isDestinoValido(candidata)) {
                     continue;
                 }
 
@@ -574,7 +604,7 @@ public class Poupador extends ProgramaPoupador {
 
             for (int i = 0; i < ACOES.length; i++) {
                 Acao candidata = ACOES[i];
-                if (!candidata.isParado() && !isDestinoValido(candidata)) {
+                if (!isDestinoValido(candidata)) {
                     continue;
                 }
 
