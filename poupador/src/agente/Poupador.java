@@ -13,7 +13,6 @@ public class Poupador extends ProgramaPoupador {
 
     private static final double PESO_SEGURANCA_VISUAL = 8.0;
     private static final double PESO_SEGURANCA_OLFATIVA = 4.0;
-    private static final double PESO_EXPLORACAO = 1.2;
     private static final double PESO_BANCO = 2.2;
     private static final double PESO_MOEDA = 2.0;
     private static final double PESO_PASTILHA = 1.2;
@@ -90,7 +89,6 @@ public class Poupador extends ProgramaPoupador {
             }
 
             score += heuristicaSeguranca(contexto, acao);
-            score += heuristicaExploracao(contexto, acao);
             score += heuristicaBanco(contexto, acao);
             score += heuristicaMoeda(contexto, acao);
             score += heuristicaPastilha(contexto, acao);
@@ -118,12 +116,6 @@ public class Poupador extends ProgramaPoupador {
         double riscoVisual = contexto.calcularRiscoVisual(acao);
         double riscoOlfativo = contexto.calcularRiscoOlfativo(acao);
         return -(PESO_SEGURANCA_VISUAL * riscoVisual) - (PESO_SEGURANCA_OLFATIVA * riscoOlfativo);
-    }
-
-    private double heuristicaExploracao(Contexto contexto, Acao acao) {
-        double probabilidade = contexto.getProbabilidadeExploracao(acao);
-        double relevancia = contexto.getRelevanciaExploracao();
-        return PESO_EXPLORACAO * relevancia * Math.log(probabilidade + EPSILON);
     }
 
     private double heuristicaBanco(Contexto contexto, Acao acao) {
@@ -220,14 +212,12 @@ public class Poupador extends ProgramaPoupador {
             linha.append(" destino=").append(formatarPosicao(contexto.getPosicaoDestino(acao)));
             if (!acao.isParado()) {
                 double seg = heuristicaSeguranca(contexto, acao);
-                double exp = heuristicaExploracao(contexto, acao);
                 double ban = heuristicaBanco(contexto, acao);
                 double moe = heuristicaMoeda(contexto, acao);
                 double pas = heuristicaPastilha(contexto, acao);
                 linha.append(" valido=").append(contexto.isDestinoValido(acao));
                 linha.append(" captEv=").append(contexto.isCapturaImediataEvitable(acao));
                 linha.append(" seg=").append(formatarDouble(seg));
-                linha.append(" exp=").append(formatarDouble(exp));
                 linha.append(" ban=").append(formatarDouble(ban));
                 linha.append(" moe=").append(formatarDouble(moe));
                 linha.append(" pas=").append(formatarDouble(pas));
@@ -360,6 +350,10 @@ public class Poupador extends ProgramaPoupador {
                 return true;
             }
 
+            if (isDestinoBanco(acao)) {
+                return true;
+            }
+
             if (visao[acao.indiceVisao] == Constantes.numeroPastinhaPoder && numeroMoedas < Constantes.custoPastinha) {
                 return false;
             }
@@ -403,24 +397,14 @@ public class Poupador extends ProgramaPoupador {
             return getCapacidadeCompraPastilha() * getVulnerabilidade() * getPressaoRisco();
         }
 
-        private double getPressaoExploracao() {
-            return Math.max(0.0, 1.0 - getCargaFinanceira()) * (1.0 - getMaiorAtracaoMoeda());
-        }
-
         private double getPressaoRisco() {
             return Math.max(calcularRiscoVisual(ACOES[0]), calcularRiscoOlfativo(ACOES[0]));
         }
 
-        private double getRelevanciaExploracao() {
-            double risco = getPressaoRisco();
-            double moeda = getMaiorAtracaoMoeda();
-            double banco = getUrgenciaBanco() * getMaiorAtracaoBanco();
-            return Math.max(0.15, (1.0 - risco) * (1.0 - moeda) * (1.0 - banco));
-        }
-
         private double getRelevanciaMoeda() {
             double urgenciaBanco = Math.min(1.0, getUrgenciaBanco());
-            return Math.max(0.0, (1.0 - getPressaoRisco()) * (1.0 - urgenciaBanco));
+            double fatorBanco = Math.max(0.2, 1.0 - urgenciaBanco);
+            return Math.max(0.0, (1.0 - getPressaoRisco()) * fatorBanco);
         }
 
         private double getUrgenciaBanco() {
@@ -429,12 +413,20 @@ public class Poupador extends ProgramaPoupador {
         }
 
         private double getAtracaoBanco(Acao acao) {
+            if (isDestinoBanco(acao)) {
+                return 1.0;
+            }
+
             Point destino = getPosicaoDestino(acao);
             int distancia = Math.abs(destino.x - Constantes.posicaoBanco.x) + Math.abs(destino.y - Constantes.posicaoBanco.y);
             return 1.0 / (distancia + 1.0);
         }
 
         private double getProximidadeLocalBanco(Acao acao) {
+            if (isDestinoBanco(acao)) {
+                return 1.0;
+            }
+
             Point destino = getPosicaoDestino(acao);
             int distancia = Math.abs(destino.x - Constantes.posicaoBanco.x) + Math.abs(destino.y - Constantes.posicaoBanco.y);
             return distancia <= 2 ? (1.0 / (distancia + 1.0)) : 0.0;
@@ -450,10 +442,11 @@ public class Poupador extends ProgramaPoupador {
         }
 
         private double getBonusDeposito(Acao acao) {
-            Point destino = getPosicaoDestino(acao);
-            return destino.equals(Constantes.posicaoBanco)
-                && !posicao.equals(Constantes.posicaoBanco)
-                && numeroMoedas > 0 ? 1.0 : 0.0;
+            return isDestinoBanco(acao) && numeroMoedas > 0 ? 1.0 : 0.0;
+        }
+
+        private boolean isDestinoBanco(Acao acao) {
+            return !acao.isParado() && visao[acao.indiceVisao] == Constantes.numeroBanco;
         }
 
         private double getAtracaoVisivel(Acao acao, int tipoAlvo) {
@@ -490,44 +483,6 @@ public class Poupador extends ProgramaPoupador {
             }
 
             return maior;
-        }
-
-        private double getProbabilidadeExploracao(Acao acao) {
-            double soma = 0.0;
-            double massaAcao = 0.0;
-
-            for (int i = 0; i < ACOES.length; i++) {
-                Acao candidata = ACOES[i];
-            if (!isDestinoValido(candidata) || isCapturaImediataEvitable(candidata)) {
-                continue;
-            }
-
-                double massa = getMassaExploracao(candidata);
-                soma += massa;
-                if (candidata.codigo == acao.codigo) {
-                    massaAcao = massa;
-                }
-            }
-
-            if (soma == 0.0) {
-                return 1.0 / ACOES.length;
-            }
-
-            return massaAcao / soma;
-        }
-
-        private double getMassaExploracao(Acao acao) {
-            Point destino = getPosicaoDestino(acao);
-
-            if (destino.equals(Constantes.posicaoBanco)) {
-                return 1.0;
-            }
-
-            if (getAtracaoVisivel(acao, Constantes.numeroPastinhaPoder) > 0.0) {
-                return 1.0;
-            }
-
-            return 1.0 / (getVisitas(acao) + 1.0);
         }
 
         private double calcularRiscoVisual(Acao acao) {
