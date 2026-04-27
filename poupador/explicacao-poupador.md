@@ -28,6 +28,9 @@ Cada uma dessas acoes passa pelo mesmo pipeline:
 
 Em outras palavras: o agente nao escolhe por `if/else` puro nem por aleatoriedade pura. Ele primeiro elimina acoes impossiveis ou suicidas, depois pontua as restantes e por fim sorteia proporcionalmente ao peso.
 
+Nesta versao, as heuristicas principais foram reorganizadas para trabalhar com valores normalizados em `0..1`.
+Isso deixa os pesos mais interpretaveis: eles representam distribuicao de importancia, e nao "forca arbitraria".
+
 ## 2. Fluxo Principal
 
 O fluxo principal esta no metodo `acao()` em [src/agente/Poupador.java:47](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:47).
@@ -124,7 +127,7 @@ Ele usa:
 Formula:
 
 ```text
-seguranca = -(8.0 * riscoVisual) - (4.0 * riscoOlfativo)
+seguranca = -(0.55 * riscoVisualNorm) - (0.25 * riscoOlfativoNorm)
 ```
 
 Quanto maior o risco, mais negativo fica o score.
@@ -134,21 +137,17 @@ Quanto maior o risco, mais negativo fica o score.
 Se uma acao tem:
 
 ```text
-rVis=0.500
-rOlf=0.000
+rVisNorm=0.500
+rOlfNorm=0.000
 ```
 
 entao a parcela de seguranca fica:
 
 ```text
-seg = -(8 * 0.5) - (4 * 0.0) = -4.0
+seg = -(0.55 * 0.5) - (0.25 * 0.0) = -0.275
 ```
 
-que bate com logs como:
-
-```text
-seg=-4.000
-```
+O valor absoluto caiu bastante em relacao a versao antiga, porque agora o objetivo e manter custo e beneficio em escalas comparaveis.
 
 ## 7. Heuristica Do Banco
 
@@ -157,17 +156,25 @@ O metodo `heuristicaBanco()` esta em [src/agente/Poupador.java:129](/home/janyls
 Ela depende de:
 
 - urgencia financeira;
-- bonus de deposito;
-- progresso em direcao ao banco;
-- proximidade local do banco.
+- objetivo de banco da acao.
 
 Formula:
 
 ```text
-banco =
-PESO_BANCO * urgencia *
-((18 * deposito) + (0.6 * progresso) + (0.4 * proximidade))
+banco = 0.45 * urgenciaBanco * objetivoBanco
 ```
+
+Onde:
+
+- `urgenciaBanco` esta em `0..1`;
+- `objetivoBanco` esta em `0..1`.
+
+`objetivoBanco` funciona assim:
+
+- se a acao realmente deposita, vale `1.0`;
+- caso contrario, vale a media entre:
+  - progresso em direcao ao banco;
+  - proximidade local do banco.
 
 ### Importante
 
@@ -185,14 +192,18 @@ Isso corrige a diferenca entre:
 
 ### Exemplo concreto
 
-Se o agente esta perto do banco, cheio de moedas e pode depositar, a parcela `ban` sobe muito.
-Foi isso que antes produzia logs como:
+Se:
+
+- `urgenciaBanco = 0.8`
+- a acao realmente deposita
+
+entao:
 
 ```text
-ban=25.256
+ban = 0.45 * 0.8 * 1.0 = 0.36
 ```
 
-Agora esse comportamento so deve acontecer na entrada real no banco, nao em repeticao parado em cima dele.
+Ou seja, depositar continua sendo uma acao muito forte, mas sem usar numeros magicos grandes.
 
 ## 8. Heuristica De Moeda
 
@@ -201,7 +212,7 @@ O metodo `heuristicaMoeda()` esta em [src/agente/Poupador.java:137](/home/janyls
 Formula:
 
 ```text
-moeda = PESO_MOEDA * relevanciaMoeda * atracaoVisivelMoeda
+moeda = 0.35 * relevanciaMoeda * atracaoVisivelMoedaNorm
 ```
 
 Ela fica mais forte quando:
@@ -210,20 +221,17 @@ Ela fica mais forte quando:
 - o risco nao esta alto;
 - a urgencia do banco nao esta dominando.
 
-`getRelevanciaMoeda()` em [src/agente/Poupador.java:320](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:320) foi suavizada.
-
-Antes, quando a urgencia do banco ficava alta, a moeda podia zerar completamente.
-
-Agora a relevancia de moeda tem um piso:
+`getRelevanciaMoeda()` em [src/agente/Poupador.java:320](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:320) agora ficou assim:
 
 ```text
-fatorBanco = max(0.2, 1 - urgenciaBanco)
+relevanciaMoeda = (1 - pressaoRisco) * (1 - urgenciaBanco)
 ```
 
 Isso significa:
 
 - banco urgente reduz a forca da moeda;
-- mas nao faz moeda desaparecer completamente se ainda houver oportunidade visivel.
+- risco alto tambem reduz a forca da moeda;
+- a atracao visivel da moeda e normalizada pela melhor opcao do tick.
 
 ## 9. Heuristica De Pastilha
 
@@ -232,7 +240,7 @@ O metodo `heuristicaPastilha()` esta em [src/agente/Poupador.java:141](/home/jan
 Formula:
 
 ```text
-pastilha = PESO_PASTILHA * urgenciaPastilha * atracaoVisivelPastilha
+pastilha = 0.20 * urgenciaPastilha * atracaoVisivelPastilhaNorm
 ```
 
 Ela so fica forte quando:
@@ -250,27 +258,25 @@ Ele so atua em `PARADO`.
 Formula:
 
 ```text
-estagnacao = -0.8 * permanenciasConsecutivas
+estagnacao = -0.20 * estagnacaoNorm
 ```
 
-Ou seja:
+Onde:
 
-- primeira permanencia: `0`
-- segunda permanencia: `-0.8`
-- terceira: `-1.6`
-- quarta: `-2.4`
+- `estagnacaoNorm = permanencias / (permanencias + 1)`
 
-e assim por diante.
+Ou seja, a punicao cresce com a repeticao, mas satura abaixo de `1.0`.
 
 ### Exemplo concreto
 
-Se o agente fica 5 ticks seguidos parado na mesma celula, a parte de estagnacao sozinha tira:
+Se o agente fica 5 ticks seguidos parado na mesma celula:
 
 ```text
--0.8 * 5 = -4.0
+estagnacaoNorm = 5 / 6 = 0.833
+estagnacao = -0.20 * 0.833 = -0.167
 ```
 
-Isso ajuda a quebrar loops irracionais de `PARADO`, mas nao elimina sozinho ciclos de vai-e-volta entre celulas equivalentes.
+Isso ajuda a quebrar loops irracionais de `PARADO`, mas de forma mais suave e controlada.
 
 ## 11. Como O PARADO Funciona Hoje
 
@@ -352,7 +358,7 @@ O log gerado em `logDecisao()` em [src/agente/Poupador.java:203](/home/janylson/
 Se aparece:
 
 ```text
--> PARADO score=-12.600 peso=0.356 estag=8
+-> PARADO score=-0.167 peso=0.210 estag=5
 ```
 
 isso quer dizer:
@@ -405,25 +411,34 @@ Serve para impedir:
 
 Principal freio de risco.
 
-Se ela estiver fraca, o agente morre por ganancia.
+Agora trabalha com risco normalizado em `0..1`.
 
 ### `heuristicaBanco()` - [linha 110](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:110)
 
 Controla retorno financeiro.
 
-Foi uma das heuristicas mais sensiveis do projeto, porque se ficar forte demais vira ima global do banco.
+Nesta versao, foi simplificada para operar com:
+
+- urgencia normalizada;
+- objetivo de banco normalizado.
 
 ### `heuristicaMoeda()` - [linha 117](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:117)
 
 Controla coleta de moedas visiveis.
 
+Agora usa atracao visivel normalizada pela melhor opcao do tick.
+
 ### `heuristicaPastilha()` - [linha 121](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:121)
 
 Controla compra/uso indireto de pastilha sob pressao.
 
+Tambem usa atracao visivel normalizada.
+
 ### `heuristicaEstagnacao()` - [linha 126](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:126)
 
 Evita loop irracional de `PARADO`.
+
+Agora a punicao cresce de forma saturada, e nao linear infinita.
 
 ### `converterScoresEmPesos()` - [linha 154](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:154)
 
@@ -457,15 +472,34 @@ Escala o valor de perseguir moeda.
 
 ### `getUrgenciaBanco()` - [linha 326](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:326)
 
-Traduz carga financeira em urgencia de retorno ao banco.
+Traduz carga financeira em urgencia de retorno ao banco, agora em escala `0..1`.
+
+### `getObjetivoBanco()` - [linha 350](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:350)
+
+Resume a qualidade da acao em relacao ao banco:
+
+- deposito real;
+- ou combinacao de progresso e proximidade.
 
 ### `isDestinoBanco()` e `getBonusDeposito()` - [linhas 351 e 355](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:351)
 
 Ponto critico para detectar deposito real olhando a celula banco do motor, e nao apenas distancia geometrica.
 
+### `getAtracaoVisivelNormalizada()` - [linha 380](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:380)
+
+Transforma a atracao por moeda ou pastilha em valor relativo no intervalo `0..1`.
+
 ### `calcularRiscoVisual()` - [linha 381](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:381)
 
 Mede risco vindo de ladroes visiveis.
+
+### `getRiscoVisualNormalizado()` e `getRiscoOlfativoNormalizado()`
+
+Convertem risco bruto para escala `0..1` usando:
+
+```text
+riscoNorm = risco / (1 + risco)
+```
 
 ### `isCapturaImediataEvitable()` - [linha 397](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:397)
 
@@ -488,6 +522,6 @@ riscoComposto = riscoVisual + 0.5 * riscoOlfativo
 
 Se eu tivesse que resumir essa versao do agente em uma frase, seria esta:
 
-> O poupador escolhe probabilisticamente entre acoes admissiveis, ponderando risco, retorno ao banco, atracao por moedas, uso de pastilha e custo de ficar estagnado.
+> O poupador escolhe probabilisticamente entre acoes admissiveis, usando heuristicas normalizadas em `0..1` para ponderar risco, retorno ao banco, atracao por moedas, uso de pastilha e custo de ficar estagnado.
 
 Essa e a arquitetura mental do arquivo inteiro.
