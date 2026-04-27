@@ -465,25 +465,6 @@ public class Poupador extends ProgramaPoupador {
             return atracao;
         }
 
-        private double getMaiorAtracaoMoeda() {
-            double maior = 0.0;
-
-            for (int i = 0; i < ACOES.length; i++) {
-                maior = Math.max(maior, getAtracaoVisivel(ACOES[i], Constantes.numeroMoeda));
-            }
-
-            return maior;
-        }
-
-        private double getMaiorAtracaoBanco() {
-            double maior = 0.0;
-
-            for (int i = 0; i < ACOES.length; i++) {
-                maior = Math.max(maior, getAtracaoBanco(ACOES[i]));
-            }
-
-            return maior;
-        }
 
         private double calcularRiscoVisual(Acao acao) {
             double risco = 0.0;
