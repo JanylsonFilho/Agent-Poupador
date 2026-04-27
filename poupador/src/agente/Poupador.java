@@ -8,14 +8,16 @@ import algoritmo.ProgramaPoupador;
 import controle.Constantes;
 
 public class Poupador extends ProgramaPoupador {
-    private static final double TOLERANCIA_RISCO = 1.0e-9;
+    private static final double ADMISSIBILIDADE_NEGADA = Double.NEGATIVE_INFINITY;
+    private static final double EPSILON = 1.0e-6;
 
-    private static final double PESO_BASE_SEGURANCA = 0.35;
-    private static final double PESO_BASE_OLFATO = 0.25;
-    private static final double PESO_BASE_VISITACAO = 0.15;
-    private static final double PESO_BASE_BANCO = 0.15;
-    private static final double PESO_BASE_MOEDA = 0.07;
-    private static final double PESO_BASE_PASTILHA = 0.03;
+    private static final double PESO_SEGURANCA_VISUAL = 8.0;
+    private static final double PESO_SEGURANCA_OLFATIVA = 4.0;
+    private static final double PESO_EXPLORACAO = 1.2;
+    private static final double PESO_BANCO = 2.2;
+    private static final double PESO_MOEDA = 2.0;
+    private static final double PESO_PASTILHA = 1.2;
+    private static final double EXPOENTE_PARADO_FALLBACK = 4.0;
 
     private static final int[][] OFFSETS_VISAO = new int[][] {
         { -2, -2 }, { -1, -2 }, { 0, -2 }, { 1, -2 }, { 2, -2 },
@@ -31,24 +33,17 @@ public class Poupador extends ProgramaPoupador {
         { -1, 1 }, { 0, 1 }, { 1, 1 }
     };
 
-    private static final Movimento[] MOVIMENTOS = new Movimento[] {
-        new Movimento(1, 0, -1, 7),
-        new Movimento(2, 0, 1, 16),
-        new Movimento(3, 1, 0, 12),
-        new Movimento(4, -1, 0, 11)
+    private static final Acao[] ACOES = new Acao[] {
+        new Acao(0, 0, 0, -1),
+        new Acao(1, 0, -1, 7),
+        new Acao(2, 0, 1, 16),
+        new Acao(3, 1, 0, 12),
+        new Acao(4, -1, 0, 11)
     };
 
     private final Map<Point, Integer> lugaresVisitados = new HashMap<Point, Integer>();
 
-    private final Heuristica[] heuristicas = new Heuristica[] {
-        new HeuristicaSeguranca(),
-        new HeuristicaOlfato(),
-        new HeuristicaVisitacao(),
-        new HeuristicaBanco(),
-        new HeuristicaMoeda(),
-        new HeuristicaPastilha()
-    };
-
+    @Override
     public int acao() {
         registrarVisita(sensor.getPosicao());
 
@@ -61,30 +56,217 @@ public class Poupador extends ProgramaPoupador {
             lugaresVisitados
         );
 
-        double[] roletaBase = Roleta.criarBase(contexto);
-        if (Roleta.soma(roletaBase) == 0.0) {
-            return 0;
+        double[] scores = calcularScores(contexto);
+        double[] pesos = converterScoresEmPesos(scores);
+        int acaoEscolhida = sortear(pesos);
+        logDecisao(contexto, scores, pesos, acaoEscolhida);
+        return acaoEscolhida;
+    }
+
+    private double[] calcularScores(Contexto contexto) {
+        double[] scores = new double[ACOES.length];
+
+        for (int i = 0; i < ACOES.length; i++) {
+            Acao acao = ACOES[i];
+            if (acao.isParado()) {
+                scores[i] = 0.0;
+                continue;
+            }
+
+            double score = avaliarAdmissibilidade(contexto, acao);
+
+            if (Double.isInfinite(score) && score < 0.0) {
+                scores[i] = score;
+                continue;
+            }
+
+            score += heuristicaSeguranca(contexto, acao);
+            score += heuristicaExploracao(contexto, acao);
+            score += heuristicaBanco(contexto, acao);
+            score += heuristicaMoeda(contexto, acao);
+            score += heuristicaPastilha(contexto, acao);
+
+            scores[i] = score;
         }
 
-        ResultadoHeuristica[] resultados = new ResultadoHeuristica[heuristicas.length];
-        for (int i = 0; i < heuristicas.length; i++) {
-            resultados[i] = heuristicas[i].calcular(contexto);
+        return scores;
+    }
+
+    private double avaliarAdmissibilidade(Contexto contexto, Acao acao) {
+        if (!acao.isParado() && !contexto.isDestinoValido(acao)) {
+            return ADMISSIBILIDADE_NEGADA;
         }
 
-        double[] roletaFinal = Roleta.combinar(roletaBase, resultados);
-        return Roleta.sortear(roletaFinal);
+        if (contexto.isCapturaImediataEvitable(acao)) {
+            return ADMISSIBILIDADE_NEGADA;
+        }
+
+        return 0.0;
+    }
+
+    private double heuristicaSeguranca(Contexto contexto, Acao acao) {
+        double riscoVisual = contexto.calcularRiscoVisual(acao);
+        double riscoOlfativo = contexto.calcularRiscoOlfativo(acao);
+        return -(PESO_SEGURANCA_VISUAL * riscoVisual) - (PESO_SEGURANCA_OLFATIVA * riscoOlfativo);
+    }
+
+    private double heuristicaExploracao(Contexto contexto, Acao acao) {
+        double probabilidade = contexto.getProbabilidadeExploracao(acao);
+        double relevancia = contexto.getRelevanciaExploracao();
+        return PESO_EXPLORACAO * relevancia * Math.log(probabilidade + EPSILON);
+    }
+
+    private double heuristicaBanco(Contexto contexto, Acao acao) {
+        double urgencia = contexto.getUrgenciaBanco();
+        double deposito = contexto.getBonusDeposito(acao);
+        double progresso = Math.max(0.0, contexto.getProgressoBanco(acao));
+        double proximidade = contexto.getProximidadeLocalBanco(acao);
+        return PESO_BANCO * urgencia * ((18.0 * deposito) + (0.6 * progresso) + (0.4 * proximidade));
+    }
+
+    private double heuristicaMoeda(Contexto contexto, Acao acao) {
+        return PESO_MOEDA * contexto.getRelevanciaMoeda() * contexto.getAtracaoVisivel(acao, Constantes.numeroMoeda);
+    }
+
+    private double heuristicaPastilha(Contexto contexto, Acao acao) {
+        return PESO_PASTILHA * contexto.getUrgenciaPastilha()
+            * contexto.getAtracaoVisivel(acao, Constantes.numeroPastinhaPoder);
+    }
+
+    private double[] converterScoresEmPesos(double[] scores) {
+        double[] pesos = new double[scores.length];
+        double maiorScoreDirecional = Double.NEGATIVE_INFINITY;
+
+        for (int i = 1; i < scores.length; i++) {
+            if (Double.isInfinite(scores[i]) && scores[i] < 0.0) {
+                continue;
+            }
+
+            maiorScoreDirecional = Math.max(maiorScoreDirecional, scores[i]);
+        }
+
+        if (Double.isInfinite(maiorScoreDirecional)) {
+            pesos[0] = 1.0;
+            return pesos;
+        }
+
+        double somaDirecoes = 0.0;
+        for (int i = 1; i < scores.length; i++) {
+            if (Double.isInfinite(scores[i]) && scores[i] < 0.0) {
+                pesos[i] = 0.0;
+                continue;
+            }
+
+            pesos[i] = Math.exp(scores[i] - maiorScoreDirecional) + EPSILON;
+            somaDirecoes += pesos[i];
+        }
+
+        pesos[0] = 1.0 / Math.pow(1.0 + somaDirecoes, EXPOENTE_PARADO_FALLBACK);
+
+        double soma = pesos[0] + somaDirecoes;
+        for (int i = 0; i < pesos.length; i++) {
+            pesos[i] /= soma;
+        }
+
+        return pesos;
+    }
+
+    private int sortear(double[] pesos) {
+        double sorteio = Math.random();
+        double acumulado = 0.0;
+
+        for (int i = 0; i < pesos.length; i++) {
+            acumulado += pesos[i];
+            if (sorteio <= acumulado) {
+                return ACOES[i].codigo;
+            }
+        }
+
+        return ACOES[0].codigo;
+    }
+
+    private void logDecisao(Contexto contexto, double[] scores, double[] pesos, int acaoEscolhida) {
+        StringBuilder log = new StringBuilder();
+        log.append("[POUPADOR ").append(getIdentificadorAgente()).append("] pos=").append(formatarPosicao(contexto.getPosicaoAtual()));
+        log.append(" moedas=").append(sensor.getNumeroDeMoedas());
+        log.append(" banco=").append(sensor.getNumeroDeMoedasBanco());
+        log.append(" imune=").append(sensor.getNumeroJogadasImunes());
+        log.append(" riscoVis=").append(formatarDouble(contexto.calcularRiscoVisual(ACOES[0])));
+        log.append(" riscoOlf=").append(formatarDouble(contexto.calcularRiscoOlfativo(ACOES[0])));
+        log.append(" escolha=").append(nomeAcao(acaoEscolhida));
+        System.out.println(log.toString());
+
+        for (int i = 0; i < ACOES.length; i++) {
+            Acao acao = ACOES[i];
+            StringBuilder linha = new StringBuilder("  -> ");
+            linha.append(nomeAcao(acao.codigo));
+            linha.append(" score=").append(formatarScore(scores[i]));
+            linha.append(" peso=").append(formatarDouble(pesos[i]));
+            linha.append(" destino=").append(formatarPosicao(contexto.getPosicaoDestino(acao)));
+            if (!acao.isParado()) {
+                double seg = heuristicaSeguranca(contexto, acao);
+                double exp = heuristicaExploracao(contexto, acao);
+                double ban = heuristicaBanco(contexto, acao);
+                double moe = heuristicaMoeda(contexto, acao);
+                double pas = heuristicaPastilha(contexto, acao);
+                linha.append(" valido=").append(contexto.isDestinoValido(acao));
+                linha.append(" captEv=").append(contexto.isCapturaImediataEvitable(acao));
+                linha.append(" seg=").append(formatarDouble(seg));
+                linha.append(" exp=").append(formatarDouble(exp));
+                linha.append(" ban=").append(formatarDouble(ban));
+                linha.append(" moe=").append(formatarDouble(moe));
+                linha.append(" pas=").append(formatarDouble(pas));
+                linha.append(" vis=").append(contexto.getVisitas(acao));
+                linha.append(" banco=").append(formatarDouble(contexto.getAtracaoBanco(acao)));
+                linha.append(" moeda=").append(formatarDouble(contexto.getAtracaoVisivel(acao, Constantes.numeroMoeda)));
+                linha.append(" past=").append(formatarDouble(contexto.getAtracaoVisivel(acao, Constantes.numeroPastinhaPoder)));
+                linha.append(" rVis=").append(formatarDouble(contexto.calcularRiscoVisual(acao)));
+                linha.append(" rOlf=").append(formatarDouble(contexto.calcularRiscoOlfativo(acao)));
+            }
+            System.out.println(linha.toString());
+        }
+    }
+
+    private String getIdentificadorAgente() {
+        return Integer.toHexString(System.identityHashCode(this));
+    }
+
+    private String nomeAcao(int codigo) {
+        switch (codigo) {
+            case 0:
+                return "PARADO";
+            case 1:
+                return "CIMA";
+            case 2:
+                return "BAIXO";
+            case 3:
+                return "DIREITA";
+            case 4:
+                return "ESQUERDA";
+            default:
+                return "ACAO_" + codigo;
+        }
+    }
+
+    private String formatarPosicao(Point posicao) {
+        return "(" + posicao.x + "," + posicao.y + ")";
+    }
+
+    private String formatarScore(double score) {
+        if (Double.isInfinite(score) && score < 0.0) {
+            return "-INF";
+        }
+        return formatarDouble(score);
+    }
+
+    private String formatarDouble(double valor) {
+        return String.format(java.util.Locale.US, "%.3f", valor);
     }
 
     private void registrarVisita(Point posicao) {
         Point chave = new Point(posicao);
         Integer visitas = lugaresVisitados.get(chave);
-
-        if (visitas == null) {
-            lugaresVisitados.put(chave, Integer.valueOf(1));
-            return;
-        }
-
-        lugaresVisitados.put(chave, Integer.valueOf(visitas.intValue() + 1));
+        lugaresVisitados.put(chave, Integer.valueOf(visitas == null ? 1 : visitas.intValue() + 1));
     }
 
     private static boolean isDestinoValido(int celula) {
@@ -92,30 +274,18 @@ public class Poupador extends ProgramaPoupador {
             return false;
         }
 
-        if (celula != Constantes.numeroPoupador01 && celula != Constantes.numeroPoupador02) {
-            return !isLadrao(celula);
+        if (celula == Constantes.numeroPoupador01 || celula == Constantes.numeroPoupador02) {
+            return false;
         }
 
-        return false;
+        return !isLadrao(celula);
     }
 
     private static boolean isLadrao(int celula) {
         return celula >= Constantes.numeroLadrao01 && celula <= Constantes.numeroLadrao04;
     }
 
-    private static boolean isMoeda(int celula) {
-        return celula == Constantes.numeroMoeda;
-    }
-
-    private static boolean isPastilha(int celula) {
-        return celula == Constantes.numeroPastinhaPoder;
-    }
-
-    private static double calcularAmeacaPorDistancia(int distancia) {
-        return 1.0 / (distancia + 1.0);
-    }
-
-    private static double calcularIntensidadeOlfato(int marca) {
+    private static double intensidadeOlfato(int marca) {
         if (marca <= 0) {
             return 0.0;
         }
@@ -123,198 +293,21 @@ public class Poupador extends ProgramaPoupador {
         return (6.0 - marca) / 5.0;
     }
 
-    private static double[] normalizarPeloMaior(double[] valores, boolean[] movimentosValidos) {
-        double maior = 0.0;
-        double[] normalizados = new double[valores.length];
+    private static final class Acao {
+        private final int codigo;
+        private final int dx;
+        private final int dy;
+        private final int indiceVisao;
 
-        for (int i = 0; i < valores.length; i++) {
-            if (!movimentosValidos[i]) {
-                continue;
-            }
-
-            maior = Math.max(maior, valores[i]);
+        private Acao(int codigo, int dx, int dy, int indiceVisao) {
+            this.codigo = codigo;
+            this.dx = dx;
+            this.dy = dy;
+            this.indiceVisao = indiceVisao;
         }
 
-        if (maior == 0.0) {
-            return normalizados;
-        }
-
-        for (int i = 0; i < valores.length; i++) {
-            if (!movimentosValidos[i]) {
-                continue;
-            }
-
-            normalizados[i] = valores[i] / maior;
-        }
-
-        return normalizados;
-    }
-
-    private static double[] misturarPreferencia(double[] preferencia, boolean[] movimentosValidos, double relevancia) {
-        double[] pesos = new double[MOVIMENTOS.length];
-
-        for (int i = 0; i < MOVIMENTOS.length; i++) {
-            if (!movimentosValidos[i]) {
-                pesos[i] = 0.0;
-                continue;
-            }
-
-            pesos[i] = (1.0 - relevancia) + (relevancia * preferencia[i]);
-        }
-
-        return pesos;
-    }
-
-    private static double[] calcularAtracaoPorAlvoVisivel(Contexto contexto, int tipoAlvo) {
-        double[] atracoes = new double[MOVIMENTOS.length];
-
-        for (int i = 0; i < MOVIMENTOS.length; i++) {
-            if (!contexto.isMovimentoValido(i)) {
-                continue;
-            }
-
-            Movimento movimento = contexto.getMovimento(i);
-            double atracao = 0.0;
-
-            for (int indiceVisao = 0; indiceVisao < contexto.getVisao().length; indiceVisao++) {
-                if (contexto.getCelulaVisao(indiceVisao) != tipoAlvo) {
-                    continue;
-                }
-
-                int[] offsetAlvo = OFFSETS_VISAO[indiceVisao];
-                int distancia = Math.abs(movimento.getDx() - offsetAlvo[0]) + Math.abs(movimento.getDy() - offsetAlvo[1]);
-                atracao += 1.0 / (distancia + 1.0);
-            }
-
-            atracoes[i] = atracao;
-        }
-
-        return atracoes;
-    }
-
-    private interface Heuristica {
-        ResultadoHeuristica calcular(Contexto contexto);
-    }
-
-    private static final class HeuristicaSeguranca implements Heuristica {
-        @Override
-        public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] riscosVisuais = contexto.calcularRiscosVisuais();
-            double[] pesos = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!contexto.isMovimentoValido(i)) {
-                    continue;
-                }
-
-                pesos[i] = 1.0 - riscosVisuais[i];
-            }
-
-            double[] roleta = Roleta.normalizar(pesos);
-            double contraste = Roleta.calcularContraste(roleta, contexto.getMovimentosValidos());
-            double ganho = 1.0 + (2.0 * maiorValor(riscosVisuais));
-            double peso = PESO_BASE_SEGURANCA * contraste * ganho;
-            return new ResultadoHeuristica(roleta, peso);
-        }
-    }
-
-    private static final class HeuristicaOlfato implements Heuristica {
-        @Override
-        public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] riscosOlfativos = contexto.calcularRiscosOlfativos();
-            double[] pesos = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!contexto.isMovimentoValido(i)) {
-                    continue;
-                }
-
-                pesos[i] = 1.0 - riscosOlfativos[i];
-            }
-
-            double[] roleta = Roleta.normalizar(pesos);
-            double contraste = Roleta.calcularContraste(roleta, contexto.getMovimentosValidos());
-            double ganho = 1.0 + maiorValor(riscosOlfativos);
-            double peso = PESO_BASE_OLFATO * contraste * ganho;
-            return new ResultadoHeuristica(roleta, peso);
-        }
-    }
-
-    private static final class HeuristicaVisitacao implements Heuristica {
-        @Override
-        public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] pesos = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!contexto.isMovimentoValido(i)) {
-                    continue;
-                }
-
-                pesos[i] = 1.0 / (contexto.getVisitasProximaPosicao(i) + 1.0);
-            }
-
-            double[] roleta = Roleta.normalizar(pesos);
-            double contraste = Roleta.calcularContraste(roleta, contexto.getMovimentosValidos());
-            double ganho = 1.0 + (1.0 - contexto.getPressaoRisco());
-            double peso = PESO_BASE_VISITACAO * contraste * ganho;
-            return new ResultadoHeuristica(roleta, peso);
-        }
-    }
-
-    private static final class HeuristicaBanco implements Heuristica {
-        @Override
-        public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] aproximacoes = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!contexto.isMovimentoValido(i)) {
-                    continue;
-                }
-
-                int distanciaBanco = contexto.getDistanciaAteBanco(i);
-                aproximacoes[i] = 1.0 / (distanciaBanco + 1.0);
-            }
-
-            double[] preferencia = normalizarPeloMaior(aproximacoes, contexto.getMovimentosValidos());
-            double relevancia = contexto.getCargaFinanceira();
-            double[] pesos = misturarPreferencia(preferencia, contexto.getMovimentosValidos(), relevancia);
-            double[] roleta = Roleta.normalizar(pesos);
-            double contraste = Roleta.calcularContraste(roleta, contexto.getMovimentosValidos());
-            double ganho = 1.0 + contexto.getCargaFinanceira();
-            double peso = PESO_BASE_BANCO * contraste * ganho;
-            return new ResultadoHeuristica(roleta, peso);
-        }
-    }
-
-    private static final class HeuristicaMoeda implements Heuristica {
-        @Override
-        public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] atracoes = calcularAtracaoPorAlvoVisivel(contexto, Constantes.numeroMoeda);
-            double[] preferencia = normalizarPeloMaior(atracoes, contexto.getMovimentosValidos());
-            double relevancia = maiorValor(preferencia);
-            double[] pesos = misturarPreferencia(preferencia, contexto.getMovimentosValidos(), relevancia);
-            double[] roleta = Roleta.normalizar(pesos);
-            double contraste = Roleta.calcularContraste(roleta, contexto.getMovimentosValidos());
-            double ganho = 1.0 + ((1.0 - contexto.getPressaoRisco()) * (1.0 - contexto.getCargaFinanceira()));
-            double peso = PESO_BASE_MOEDA * contraste * ganho;
-            return new ResultadoHeuristica(roleta, peso);
-        }
-    }
-
-    private static final class HeuristicaPastilha implements Heuristica {
-        @Override
-        public ResultadoHeuristica calcular(Contexto contexto) {
-            double[] atracoes = calcularAtracaoPorAlvoVisivel(contexto, Constantes.numeroPastinhaPoder);
-            double[] preferencia = normalizarPeloMaior(atracoes, contexto.getMovimentosValidos());
-            double vulnerabilidade = contexto.getVulnerabilidade();
-            double compraDisponivel = contexto.getCapacidadeCompraPastilha();
-            double relevancia = compraDisponivel * vulnerabilidade * maiorValor(preferencia);
-            double[] pesos = misturarPreferencia(preferencia, contexto.getMovimentosValidos(), relevancia);
-            double[] roleta = Roleta.normalizar(pesos);
-            double contraste = Roleta.calcularContraste(roleta, contexto.getMovimentosValidos());
-            double ganho = 1.0 + vulnerabilidade;
-            double peso = PESO_BASE_PASTILHA * contraste * ganho;
-            return new ResultadoHeuristica(roleta, peso);
+        private boolean isParado() {
+            return codigo == 0;
         }
     }
 
@@ -325,440 +318,291 @@ public class Poupador extends ProgramaPoupador {
         private final int numeroMoedas;
         private final int numeroJogadasImunes;
         private final Map<Point, Integer> lugaresVisitados;
-        private final boolean[] movimentosValidos;
 
-        private Contexto(int[] visao, int[] olfatoLadrao, Point posicao, int numeroMoedas, int numeroJogadasImunes,
-                Map<Point, Integer> lugaresVisitados) {
+        private Contexto(
+            int[] visao,
+            int[] olfatoLadrao,
+            Point posicao,
+            int numeroMoedas,
+            int numeroJogadasImunes,
+            Map<Point, Integer> lugaresVisitados
+        ) {
             this.visao = visao;
             this.olfatoLadrao = olfatoLadrao;
             this.posicao = new Point(posicao);
             this.numeroMoedas = numeroMoedas;
             this.numeroJogadasImunes = numeroJogadasImunes;
             this.lugaresVisitados = lugaresVisitados;
-            this.movimentosValidos = calcularMovimentosValidos(visao);
         }
 
-        private boolean[] calcularMovimentosValidos(int[] visaoAtual) {
-            boolean[] validos = new boolean[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                validos[i] = isDestinoValido(visaoAtual[MOVIMENTOS[i].getIndiceVisao()]);
+        private boolean isDestinoValido(Acao acao) {
+            if (visao[acao.indiceVisao] == Constantes.numeroPastinhaPoder && numeroMoedas < Constantes.custoPastinha) {
+                return false;
             }
-
-            return validos;
+            return Poupador.isDestinoValido(visao[acao.indiceVisao]);
         }
 
-        private int[] getVisao() {
-            return visao;
+        private Point getPosicaoAtual() {
+            return new Point(posicao);
         }
 
-        private int getCelulaVisao(int indice) {
-            return visao[indice];
+        private int getVisitas(Acao acao) {
+            Integer visitas = lugaresVisitados.get(getPosicaoDestino(acao));
+            return visitas == null ? 0 : visitas.intValue();
         }
 
-        private int[] getOlfatoLadrao() {
-            return olfatoLadrao;
-        }
-
-        private int getMarcaOlfatoLadrao(int indice) {
-            return olfatoLadrao[indice];
-        }
-
-        private boolean[] getMovimentosValidos() {
-            return movimentosValidos;
-        }
-
-        private boolean isMovimentoValido(int indiceMovimento) {
-            return movimentosValidos[indiceMovimento];
-        }
-
-        private Movimento getMovimento(int indiceMovimento) {
-            return MOVIMENTOS[indiceMovimento];
-        }
-
-        private Point getProximaPosicao(int indiceMovimento) {
-            Movimento movimento = getMovimento(indiceMovimento);
-            return new Point(posicao.x + movimento.getDx(), posicao.y + movimento.getDy());
-        }
-
-        private int getVisitasProximaPosicao(int indiceMovimento) {
-            Integer visitas = lugaresVisitados.get(getProximaPosicao(indiceMovimento));
-            if (visitas == null) {
-                return 0;
-            }
-
-            return visitas.intValue();
-        }
-
-        private int getDistanciaAteBanco(int indiceMovimento) {
-            Point proximaPosicao = getProximaPosicao(indiceMovimento);
-            return Math.abs(proximaPosicao.x - Constantes.posicaoBanco.x) + Math.abs(proximaPosicao.y - Constantes.posicaoBanco.y);
-        }
-
-        private double[] calcularRiscosVisuais() {
-            double[] riscos = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!isMovimentoValido(i)) {
-                    riscos[i] = 1.0;
-                    continue;
-                }
-
-                double produtoSeguranca = 1.0;
-                Movimento movimento = getMovimento(i);
-
-                for (int indiceVisao = 0; indiceVisao < visao.length; indiceVisao++) {
-                    if (!isLadrao(visao[indiceVisao])) {
-                        continue;
-                    }
-
-                    int[] offsetLadrao = OFFSETS_VISAO[indiceVisao];
-                    int distancia = Math.abs(movimento.getDx() - offsetLadrao[0]) + Math.abs(movimento.getDy() - offsetLadrao[1]);
-                    double ameaca = calcularAmeacaSeguranca(distancia);
-                    produtoSeguranca *= (1.0 - ameaca);
-                }
-
-                riscos[i] = 1.0 - produtoSeguranca;
-            }
-
-            return riscos;
-        }
-
-        private double[] calcularRiscosOlfativos() {
-            double[] riscos = new double[MOVIMENTOS.length];
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!isMovimentoValido(i)) {
-                    riscos[i] = 1.0;
-                    continue;
-                }
-
-                double produtoSeguranca = 1.0;
-                Movimento movimento = getMovimento(i);
-
-                for (int indiceOlfato = 0; indiceOlfato < olfatoLadrao.length; indiceOlfato++) {
-                    double intensidade = calcularIntensidadeOlfato(olfatoLadrao[indiceOlfato]);
-                    if (intensidade == 0.0) {
-                        continue;
-                    }
-
-                    int[] offsetCheiro = OFFSETS_OLFATO[indiceOlfato];
-                    int distancia = Math.abs(movimento.getDx() - offsetCheiro[0]) + Math.abs(movimento.getDy() - offsetCheiro[1]);
-                    double ameaca = intensidade * calcularAmeacaPorDistancia(distancia);
-                    produtoSeguranca *= (1.0 - ameaca);
-                }
-
-                riscos[i] = 1.0 - produtoSeguranca;
-            }
-
-            return riscos;
-        }
-
-        private boolean[] getMovimentosSegurosPrioritarios() {
-            boolean[] permitidos = new boolean[MOVIMENTOS.length];
-            double[] riscosVisuais = calcularRiscosVisuais();
-            double menorRiscoVisual = Double.POSITIVE_INFINITY;
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!isMovimentoValido(i)) {
-                    continue;
-                }
-
-                menorRiscoVisual = Math.min(menorRiscoVisual, riscosVisuais[i]);
-            }
-
-            if (Double.isInfinite(menorRiscoVisual)) {
-                return permitidos;
-            }
-
-            int quantidadePermitidos = 0;
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!isMovimentoValido(i)) {
-                    continue;
-                }
-
-                if (riscosVisuais[i] <= (menorRiscoVisual + TOLERANCIA_RISCO)) {
-                    permitidos[i] = true;
-                    quantidadePermitidos++;
-                }
-            }
-
-            if (quantidadePermitidos <= 1) {
-                return permitidos;
-            }
-
-            double[] riscosOlfativos = calcularRiscosOlfativos();
-            double menorRiscoOlfativo = Double.POSITIVE_INFINITY;
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!permitidos[i]) {
-                    continue;
-                }
-
-                menorRiscoOlfativo = Math.min(menorRiscoOlfativo, riscosOlfativos[i]);
-            }
-
-            boolean[] refinados = new boolean[MOVIMENTOS.length];
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!permitidos[i]) {
-                    continue;
-                }
-
-                refinados[i] = riscosOlfativos[i] <= (menorRiscoOlfativo + TOLERANCIA_RISCO);
-            }
-
-            return refinados;
-        }
-
-        private double calcularAmeacaSeguranca(int distancia) {
-            double vulnerabilidade = 1.0 - getImunidadeNormalizada();
-            if (vulnerabilidade == 0.0) {
-                return 0.0;
-            }
-
-            if (distancia <= 1) {
-                return vulnerabilidade;
-            }
-
-            return vulnerabilidade * (1.0 / distancia);
+        private Point getPosicaoDestino(Acao acao) {
+            return new Point(posicao.x + acao.dx, posicao.y + acao.dy);
         }
 
         private double getCargaFinanceira() {
             return Math.min(1.0, numeroMoedas / 10.0);
         }
 
-        private double getImunidadeNormalizada() {
+        private double getImunidade() {
             return Math.min(1.0, numeroJogadasImunes / (double) Constantes.numeroTICsImunes);
         }
 
         private double getCapacidadeCompraPastilha() {
-            return Math.min(1.0, Math.floor(numeroMoedas / (double) Constantes.custoPastinha));
-        }
-
-        private double getPressaoRisco() {
-            return Math.max(calcularPressaoVisualAtual(), calcularPressaoOlfativaAtual());
+            return numeroMoedas >= Constantes.custoPastinha ? 1.0 : 0.0;
         }
 
         private double getVulnerabilidade() {
-            return (0.5 * (1.0 - getImunidadeNormalizada())) + (0.3 * getPressaoRisco()) + (0.2 * getCargaFinanceira());
+            return 1.0 - getImunidade();
         }
 
-        private double calcularPressaoVisualAtual() {
-            double maior = 0.0;
+        private double getUrgenciaPastilha() {
+            return getCapacidadeCompraPastilha() * getVulnerabilidade() * getPressaoRisco();
+        }
 
-            for (int indiceVisao = 0; indiceVisao < visao.length; indiceVisao++) {
-                if (!isLadrao(visao[indiceVisao])) {
+        private double getPressaoExploracao() {
+            return Math.max(0.0, 1.0 - getCargaFinanceira()) * (1.0 - getMaiorAtracaoMoeda());
+        }
+
+        private double getPressaoRisco() {
+            return Math.max(calcularRiscoVisual(ACOES[0]), calcularRiscoOlfativo(ACOES[0]));
+        }
+
+        private double getRelevanciaExploracao() {
+            double risco = getPressaoRisco();
+            double moeda = getMaiorAtracaoMoeda();
+            double banco = getUrgenciaBanco() * getMaiorAtracaoBanco();
+            return Math.max(0.15, (1.0 - risco) * (1.0 - moeda) * (1.0 - banco));
+        }
+
+        private double getRelevanciaMoeda() {
+            double urgenciaBanco = Math.min(1.0, getUrgenciaBanco());
+            return Math.max(0.0, (1.0 - getPressaoRisco()) * (1.0 - urgenciaBanco));
+        }
+
+        private double getUrgenciaBanco() {
+            double carga = getCargaFinanceira();
+            return carga * (1.0 + carga);
+        }
+
+        private double getAtracaoBanco(Acao acao) {
+            Point destino = getPosicaoDestino(acao);
+            int distancia = Math.abs(destino.x - Constantes.posicaoBanco.x) + Math.abs(destino.y - Constantes.posicaoBanco.y);
+            return 1.0 / (distancia + 1.0);
+        }
+
+        private double getProximidadeLocalBanco(Acao acao) {
+            Point destino = getPosicaoDestino(acao);
+            int distancia = Math.abs(destino.x - Constantes.posicaoBanco.x) + Math.abs(destino.y - Constantes.posicaoBanco.y);
+            return distancia <= 2 ? (1.0 / (distancia + 1.0)) : 0.0;
+        }
+
+        private double getProgressoBanco(Acao acao) {
+            int distanciaAtual = Math.abs(posicao.x - Constantes.posicaoBanco.x)
+                + Math.abs(posicao.y - Constantes.posicaoBanco.y);
+            Point destino = getPosicaoDestino(acao);
+            int distanciaDestino = Math.abs(destino.x - Constantes.posicaoBanco.x)
+                + Math.abs(destino.y - Constantes.posicaoBanco.y);
+            return distanciaAtual - distanciaDestino;
+        }
+
+        private double getBonusDeposito(Acao acao) {
+            Point destino = getPosicaoDestino(acao);
+            return destino.equals(Constantes.posicaoBanco) ? 1.0 : 0.0;
+        }
+
+        private double getAtracaoVisivel(Acao acao, int tipoAlvo) {
+            double atracao = 0.0;
+
+            for (int i = 0; i < visao.length; i++) {
+                if (visao[i] != tipoAlvo) {
                     continue;
                 }
 
-                int[] offsetLadrao = OFFSETS_VISAO[indiceVisao];
-                int distancia = Math.abs(offsetLadrao[0]) + Math.abs(offsetLadrao[1]);
-                maior = Math.max(maior, calcularAmeacaPorDistancia(distancia));
+                int[] offset = OFFSETS_VISAO[i];
+                int distancia = Math.abs(acao.dx - offset[0]) + Math.abs(acao.dy - offset[1]);
+                atracao += 1.0 / (distancia + 1.0);
+            }
+
+            return atracao;
+        }
+
+        private double getMaiorAtracaoMoeda() {
+            double maior = 0.0;
+
+            for (int i = 0; i < ACOES.length; i++) {
+                maior = Math.max(maior, getAtracaoVisivel(ACOES[i], Constantes.numeroMoeda));
             }
 
             return maior;
         }
 
-        private double calcularPressaoOlfativaAtual() {
+        private double getMaiorAtracaoBanco() {
             double maior = 0.0;
 
-            for (int i = 0; i < olfatoLadrao.length; i++) {
-                maior = Math.max(maior, calcularIntensidadeOlfato(olfatoLadrao[i]));
+            for (int i = 0; i < ACOES.length; i++) {
+                maior = Math.max(maior, getAtracaoBanco(ACOES[i]));
             }
 
             return maior;
         }
-    }
 
-    private static final class ResultadoHeuristica {
-        private final double[] roleta;
-        private final double peso;
+        private double getProbabilidadeExploracao(Acao acao) {
+            double soma = 0.0;
+            double massaAcao = 0.0;
 
-        private ResultadoHeuristica(double[] roleta, double peso) {
-            this.roleta = roleta;
-            this.peso = peso;
-        }
-
-        private double[] getRoleta() {
-            return roleta;
-        }
-
-        private double getPeso() {
-            return peso;
-        }
-    }
-
-    private static final class Roleta {
-        private Roleta() {
-        }
-
-        private static double[] criarBase(Contexto contexto) {
-            double[] pesos = new double[MOVIMENTOS.length];
-            boolean[] movimentosPriorizados = contexto.getMovimentosSegurosPrioritarios();
-            boolean existeMovimentoPriorizado = false;
-
-            for (int i = 0; i < movimentosPriorizados.length; i++) {
-                if (movimentosPriorizados[i]) {
-                    existeMovimentoPriorizado = true;
-                    break;
-                }
-            }
-
-            for (int i = 0; i < MOVIMENTOS.length; i++) {
-                if (!contexto.isMovimentoValido(i)) {
-                    pesos[i] = 0.0;
+            for (int i = 0; i < ACOES.length; i++) {
+                Acao candidata = ACOES[i];
+                if ((!candidata.isParado() && !isDestinoValido(candidata)) || isCapturaImediataEvitable(candidata)) {
                     continue;
                 }
 
-                pesos[i] = (!existeMovimentoPriorizado || movimentosPriorizados[i]) ? 1.0 : 0.0;
-            }
-
-            return normalizar(pesos);
-        }
-
-        private static double[] combinar(double[] roletaBase, ResultadoHeuristica[] resultados) {
-            double[] pesosCombinados = new double[MOVIMENTOS.length];
-            double somaPesos = 0.0;
-
-            for (int i = 0; i < resultados.length; i++) {
-                double peso = resultados[i].getPeso();
-                if (peso == 0.0) {
-                    continue;
-                }
-
-                somaPesos += peso;
-                double[] roletaHeuristica = resultados[i].getRoleta();
-                for (int j = 0; j < pesosCombinados.length; j++) {
-                    pesosCombinados[j] += peso * roletaHeuristica[j];
+                double massa = getMassaExploracao(candidata);
+                soma += massa;
+                if (candidata.codigo == acao.codigo) {
+                    massaAcao = massa;
                 }
             }
-
-            if (somaPesos == 0.0) {
-                return roletaBase;
-            }
-
-            for (int i = 0; i < pesosCombinados.length; i++) {
-                pesosCombinados[i] /= somaPesos;
-            }
-
-            double pesoSeguranca = resultados[0].getPeso();
-            if (pesoSeguranca > 0.0) {
-                double[] roletaSeguranca = resultados[0].getRoleta();
-                for (int i = 0; i < pesosCombinados.length; i++) {
-                    pesosCombinados[i] *= roletaSeguranca[i];
-                }
-            }
-
-            for (int i = 0; i < pesosCombinados.length; i++) {
-                pesosCombinados[i] *= roletaBase[i];
-            }
-
-            if (soma(pesosCombinados) == 0.0) {
-                return roletaBase;
-            }
-
-            return normalizar(pesosCombinados);
-        }
-
-        private static double calcularContraste(double[] roleta, boolean[] movimentosValidos) {
-            double maior = Double.NEGATIVE_INFINITY;
-            double menor = Double.POSITIVE_INFINITY;
-            int quantidadeValidos = 0;
-
-            for (int i = 0; i < roleta.length; i++) {
-                if (!movimentosValidos[i]) {
-                    continue;
-                }
-
-                quantidadeValidos++;
-                maior = Math.max(maior, roleta[i]);
-                menor = Math.min(menor, roleta[i]);
-            }
-
-            if (quantidadeValidos <= 1) {
-                return 0.0;
-            }
-
-            return maior - menor;
-        }
-
-        private static double[] normalizar(double[] pesos) {
-            double soma = soma(pesos);
-            double[] normalizados = new double[pesos.length];
 
             if (soma == 0.0) {
-                return normalizados;
+                return 1.0 / ACOES.length;
             }
 
-            for (int i = 0; i < pesos.length; i++) {
-                normalizados[i] = pesos[i] / soma;
-            }
-
-            return normalizados;
+            return massaAcao / soma;
         }
 
-        private static double soma(double[] valores) {
-            double soma = 0.0;
+        private double getMassaExploracao(Acao acao) {
+            Point destino = getPosicaoDestino(acao);
 
-            for (int i = 0; i < valores.length; i++) {
-                soma += valores[i];
+            if (destino.equals(Constantes.posicaoBanco)) {
+                return 1.0;
             }
 
-            return soma;
+            if (getAtracaoVisivel(acao, Constantes.numeroPastinhaPoder) > 0.0) {
+                return 1.0;
+            }
+
+            return 1.0 / (getVisitas(acao) + 1.0);
         }
 
-        private static int sortear(double[] roleta) {
-            double sorteio = Math.random();
-            double acumulado = 0.0;
+        private double calcularRiscoVisual(Acao acao) {
+            double risco = 0.0;
+            double vulnerabilidade = getVulnerabilidade();
 
-            for (int i = 0; i < roleta.length; i++) {
-                acumulado += roleta[i];
-                if (sorteio <= acumulado) {
-                    return MOVIMENTOS[i].getAcao();
+            for (int i = 0; i < visao.length; i++) {
+                if (!isLadrao(visao[i])) {
+                    continue;
                 }
+
+                int[] offset = OFFSETS_VISAO[i];
+                int distancia = Math.abs(acao.dx - offset[0]) + Math.abs(acao.dy - offset[1]);
+                risco += vulnerabilidade / Math.max(1.0, distancia);
             }
 
-            return MOVIMENTOS[MOVIMENTOS.length - 1].getAcao();
-        }
-    }
-
-    private static double maiorValor(double[] valores) {
-        double maior = 0.0;
-
-        for (int i = 0; i < valores.length; i++) {
-            maior = Math.max(maior, valores[i]);
+            return risco;
         }
 
-        return maior;
-    }
+        private boolean isCapturaImediataEvitable(Acao acao) {
+            if (getImunidade() > 0.0) {
+                return false;
+            }
 
-    private static final class Movimento {
-        private final int acao;
-        private final int dx;
-        private final int dy;
-        private final int indiceVisao;
+            int melhorDistancia = melhorDistanciaVisualSegura();
+            int distanciaAcao = menorDistanciaVisual(acao);
 
-        private Movimento(int acao, int dx, int dy, int indiceVisao) {
-            this.acao = acao;
-            this.dx = dx;
-            this.dy = dy;
-            this.indiceVisao = indiceVisao;
+            if (melhorDistancia >= 3 && distanciaAcao <= 2) {
+                return true;
+            }
+
+            if (melhorDistancia >= 2 && distanciaAcao <= 1) {
+                return true;
+            }
+
+            double melhorRisco = melhorRiscoCompostoSeguro();
+            double riscoAcao = calcularRiscoComposto(acao);
+            return distanciaAcao <= 2 && (riscoAcao - melhorRisco) >= 0.75;
         }
 
-        private int getAcao() {
-            return acao;
+        private int melhorDistanciaVisualSegura() {
+            int melhor = Integer.MIN_VALUE;
+
+            for (int i = 0; i < ACOES.length; i++) {
+                Acao candidata = ACOES[i];
+                if (!candidata.isParado() && !isDestinoValido(candidata)) {
+                    continue;
+                }
+
+                melhor = Math.max(melhor, menorDistanciaVisual(candidata));
+            }
+
+            return melhor == Integer.MIN_VALUE ? Integer.MAX_VALUE : melhor;
         }
 
-        private int getDx() {
-            return dx;
+        private int menorDistanciaVisual(Acao acao) {
+            int menor = Integer.MAX_VALUE;
+
+            for (int i = 0; i < visao.length; i++) {
+                if (!isLadrao(visao[i])) {
+                    continue;
+                }
+
+                int[] offset = OFFSETS_VISAO[i];
+                int distancia = Math.abs(acao.dx - offset[0]) + Math.abs(acao.dy - offset[1]);
+                menor = Math.min(menor, distancia);
+            }
+
+            return menor;
         }
 
-        private int getDy() {
-            return dy;
+        private double melhorRiscoCompostoSeguro() {
+            double melhor = Double.POSITIVE_INFINITY;
+
+            for (int i = 0; i < ACOES.length; i++) {
+                Acao candidata = ACOES[i];
+                if (!candidata.isParado() && !isDestinoValido(candidata)) {
+                    continue;
+                }
+
+                melhor = Math.min(melhor, calcularRiscoComposto(candidata));
+            }
+
+            return Double.isInfinite(melhor) ? Double.POSITIVE_INFINITY : melhor;
         }
 
-        private int getIndiceVisao() {
-            return indiceVisao;
+        private double calcularRiscoComposto(Acao acao) {
+            return calcularRiscoVisual(acao) + (0.5 * calcularRiscoOlfativo(acao));
+        }
+
+        private double calcularRiscoOlfativo(Acao acao) {
+            double risco = 0.0;
+
+            for (int i = 0; i < olfatoLadrao.length; i++) {
+                double intensidade = intensidadeOlfato(olfatoLadrao[i]);
+                if (intensidade == 0.0) {
+                    continue;
+                }
+
+                int[] offset = OFFSETS_OLFATO[i];
+                int distancia = Math.abs(acao.dx - offset[0]) + Math.abs(acao.dy - offset[1]);
+                risco += intensidade / (distancia + 1.0);
+            }
+
+            return risco;
         }
     }
 }
