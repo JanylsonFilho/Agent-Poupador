@@ -11,12 +11,13 @@ public class Poupador extends ProgramaPoupador {
     private static final double ADMISSIBILIDADE_NEGADA = Double.NEGATIVE_INFINITY;
     private static final double EPSILON = 1.0e-6;
 
-    private static final double PESO_SEGURANCA_VISUAL = 0.55;
-    private static final double PESO_SEGURANCA_OLFATIVA = 0.25;
-    private static final double PESO_BANCO = 0.45;
-    private static final double PESO_MOEDA = 0.35;
-    private static final double PESO_PASTILHA = 0.20;
-    private static final double PESO_ESTAGNACAO_PARADO = 0.20;
+    // Distribuicao global de importancia das heuristicas; as magnitudes somam 1.0.
+    private static final double PESO_SEGURANCA_VISUAL = 0.30;
+    private static final double PESO_SEGURANCA_OLFATIVA = 0.15;
+    private static final double PESO_BANCO = 0.22;
+    private static final double PESO_MOEDA = 0.18;
+    private static final double PESO_PASTILHA = 0.08;
+    private static final double PESO_ESTAGNACAO_PARADO = 0.07;
     private static final int[][] OFFSETS_VISAO = new int[][] {
         { -2, -2 }, { -1, -2 }, { 0, -2 }, { 1, -2 }, { 2, -2 },
         { -2, -1 }, { -1, -1 }, { 0, -1 }, { 1, -1 }, { 2, -1 },
@@ -124,31 +125,47 @@ public class Poupador extends ProgramaPoupador {
     private double heuristicaSeguranca(Contexto contexto, Acao acao) {
         double riscoVisual = contexto.getRiscoVisualNormalizado(acao);
         double riscoOlfativo = contexto.getRiscoOlfativoNormalizado(acao);
-        // Risco sempre entra como custo normalizado; visual pesa mais que olfato.
+        // Definicao heuristica:
+        // Hseg(a) = -(0.55 * Rvis(a)) - (0.25 * Rolf(a))
+        // onde Rvis e Rolf sao riscos ja normalizados em [0, 1].
+        // Assim, quanto maior o risco associado a acao, menor a contribuicao
+        // heuristica de seguranca no score final.
         return -(PESO_SEGURANCA_VISUAL * riscoVisual) - (PESO_SEGURANCA_OLFATIVA * riscoOlfativo);
     }
 
     private double heuristicaBanco(Contexto contexto, Acao acao) {
         double urgencia = contexto.getUrgenciaBanco();
         double objetivoBanco = contexto.getObjetivoBanco(acao);
-        // Deposito real continua dominando, mas a formula agora opera so com termos em [0, 1].
+        // Formula principal do banco:
+        // Hbanco(a) = PESO_BANCO * urgenciaBanco * objetivoBanco(a).
+        // A heuristica cresce quando o agente carrega mais moedas e quando a acao
+        // deposita ou aproxima o agente do banco.
         return PESO_BANCO * urgencia * objetivoBanco;
     }
 
     private double heuristicaMoeda(Contexto contexto, Acao acao) {
-        // Moeda visivel so conta de fato quando o risco e a urgencia do banco permitem.
-        return PESO_MOEDA * contexto.getRelevanciaMoeda()
-            * contexto.getAtracaoVisivelNormalizada(acao, Constantes.numeroMoeda);
+        // Hmoeda(a) = PESO_MOEDA * atracaoMoedaNormalizada(a).
+        // Esta heuristica mede apenas o alinhamento geometrico da acao com moedas
+        // visiveis; a competicao com risco e banco acontece no score global.
+        // Em outras palavras, esta heuristica responde apenas:
+        // "o quanto esta acao aponta para moedas visiveis neste tick?"
+        return PESO_MOEDA * contexto.getAtracaoVisivelNormalizada(acao, Constantes.numeroMoeda);
     }
 
     private double heuristicaPastilha(Contexto contexto, Acao acao) {
-        // Pastilha ganha relevancia quando o agente pode comprar e esta vulneravel.
+        // Hpast(a) = PESO_PASTILHA * urgenciaPastilha * atracaoPastilhaNormalizada(a).
+        // Esta heuristica responde a duas perguntas:
+        // - faz sentido buscar pastilha agora?
+        // - esta acao aponta bem para uma pastilha visivel?
         return PESO_PASTILHA * contexto.getUrgenciaPastilha()
             * contexto.getAtracaoVisivelNormalizada(acao, Constantes.numeroPastinhaPoder);
     }
 
     private double heuristicaEstagnacao(Contexto contexto, Acao acao) {
-        // So pune ficar parado; nao pune movimento repetido.
+        // Hestag(PARADO) = -PESO_ESTAGNACAO_PARADO * estagnacaoNorm.
+        // Esta heuristica so pune a acao PARADO; movimentos nao recebem essa penalizacao.
+        // Quanto mais ticks seguidos o agente insiste em ficar na mesma posicao,
+        // mais negativa fica a contribuicao desta heuristica no score.
         if (!acao.isParado()) {
             return 0.0;
         }
@@ -158,17 +175,19 @@ public class Poupador extends ProgramaPoupador {
 
     private double[] converterScoresEmPesos(double[] scores) {
         double[] pesos = new double[scores.length];
-        double maiorScore = Double.NEGATIVE_INFINITY;
+        // Procura o pior score valido para deslocar toda a escala para cima.
+        double menorScore = Double.POSITIVE_INFINITY;
 
         for (int i = 0; i < scores.length; i++) {
             if (Double.isInfinite(scores[i]) && scores[i] < 0.0) {
+                // Acoes com -INF nao entram na roleta.
                 continue;
             }
 
-            maiorScore = Math.max(maiorScore, scores[i]);
+            menorScore = Math.min(menorScore, scores[i]);
         }
 
-        if (Double.isInfinite(maiorScore)) {
+        if (Double.isInfinite(menorScore)) {
             // Se tudo falhou, a roleta cai no fallback de seguranca.
             pesos[0] = 1.0;
             return pesos;
@@ -177,16 +196,24 @@ public class Poupador extends ProgramaPoupador {
         double soma = 0.0;
         for (int i = 0; i < scores.length; i++) {
             if (Double.isInfinite(scores[i]) && scores[i] < 0.0) {
+                // Acao inadmissivel recebe peso zero e nunca sera sorteada.
                 pesos[i] = 0.0;
                 continue;
             }
 
-            // Softmax estabilizado: comparar tudo com o maior score evita explosao numerica.
-            pesos[i] = Math.exp(scores[i] - maiorScore) + EPSILON;
+            // Roleta linear por deslocamento:
+            // pesoBruto(a) = score(a) - menorScoreValido + EPSILON.
+            // Isso garante pesos nao negativos, mesmo quando os scores sao negativos,
+            // e preserva a ordem de preferencia entre as acoes validas.
+            // Assim, a pior acao valida fica muito perto de zero e a melhor recebe
+            // o maior peso bruto antes da normalizacao.
+            pesos[i] = (scores[i] - menorScore) + EPSILON;
             soma += pesos[i];
         }
 
         for (int i = 0; i < pesos.length; i++) {
+            // Normaliza para que a soma final dos pesos seja 1.0, formando uma
+            // distribuicao de probabilidades para a roleta do metodo sortear().
             pesos[i] /= soma;
         }
 
@@ -251,10 +278,12 @@ public class Poupador extends ProgramaPoupador {
     }
 
     private String getIdentificadorAgente() {
+        // Usa o hash de identidade apenas para diferenciar instancias no log.
         return Integer.toHexString(System.identityHashCode(this));
     }
 
     private String nomeAcao(int codigo) {
+        // Traduz o codigo numerico da acao para um nome legivel na depuracao.
         switch (codigo) {
             case 0:
                 return "PARADO";
@@ -272,10 +301,12 @@ public class Poupador extends ProgramaPoupador {
     }
 
     private String formatarPosicao(Point posicao) {
+        // Padroniza a impressao de coordenadas no formato (x,y).
         return "(" + posicao.x + "," + posicao.y + ")";
     }
 
     private String formatarScore(double score) {
+        // Preserva a leitura de acoes bloqueadas como -INF no log final.
         if (Double.isInfinite(score) && score < 0.0) {
             return "-INF";
         }
@@ -283,6 +314,7 @@ public class Poupador extends ProgramaPoupador {
     }
 
     private String formatarDouble(double valor) {
+        // Limita a exibicao numerica para 3 casas, facilitando comparacao visual.
         return String.format(java.util.Locale.US, "%.3f", valor);
     }
 
@@ -294,6 +326,7 @@ public class Poupador extends ProgramaPoupador {
     }
 
     private static boolean isDestinoValido(int celula) {
+        // Define, no nivel estatico, quais codigos de celula sao atravessaveis.
         if (celula == Constantes.foraAmbiene || celula == Constantes.semVisao || celula == Constantes.numeroParede) {
             return false;
         }
@@ -306,10 +339,12 @@ public class Poupador extends ProgramaPoupador {
     }
 
     private static boolean isLadrao(int celula) {
+        // Reconhece qualquer um dos codigos visuais associados a agentes ladrões.
         return celula >= Constantes.numeroLadrao01 && celula <= Constantes.numeroLadrao04;
     }
 
     private static double intensidadeOlfato(int marca) {
+        // Converte a marca olfativa discreta do sensor em intensidade continua de risco.
         if (marca <= 0) {
             return 0.0;
         }
@@ -324,6 +359,8 @@ public class Poupador extends ProgramaPoupador {
         private final int indiceVisao;
 
         private Acao(int codigo, int dx, int dy, int indiceVisao) {
+            // Cada acao guarda codigo do atuador, deslocamento cartesiano e indice
+            // correspondente na matriz de visao do simulador.
             this.codigo = codigo;
             this.dx = dx;
             this.dy = dy;
@@ -331,6 +368,7 @@ public class Poupador extends ProgramaPoupador {
         }
 
         private boolean isParado() {
+            // Convenio local: o codigo 0 representa a acao de permanecer na celula atual.
             return codigo == 0;
         }
     }
@@ -353,6 +391,7 @@ public class Poupador extends ProgramaPoupador {
             Map<Point, Integer> lugaresVisitados,
             int permanenciasConsecutivas
         ) {
+            // Copia o estado relevante do tick para centralizar os calculos heurísticos.
             this.visao = visao;
             this.olfatoLadrao = olfatoLadrao;
             this.posicao = new Point(posicao);
@@ -363,6 +402,7 @@ public class Poupador extends ProgramaPoupador {
         }
 
         private boolean isDestinoValido(Acao acao) {
+            // Junta regras dinamicas do turno com a validacao estatica da celula.
             if (acao.isParado()) {
                 return true;
             }
@@ -380,55 +420,61 @@ public class Poupador extends ProgramaPoupador {
         }
 
         private Point getPosicaoAtual() {
+            // Retorna copia defensiva da posicao para evitar aliasing no log.
             return new Point(posicao);
         }
 
         private int getPermanenciasConsecutivas() {
+            // Expõe a memoria curta de permanencia para a heuristica de estagnacao.
             return permanenciasConsecutivas;
         }
 
         private int getVisitas(Acao acao) {
+            // Consulta quantas vezes o destino desta acao ja apareceu no historico.
             Integer visitas = lugaresVisitados.get(getPosicaoDestino(acao));
             return visitas == null ? 0 : visitas.intValue();
         }
 
         private Point getPosicaoDestino(Acao acao) {
+            // Projeta a coordenada final da acao a partir da posicao atual e do deslocamento.
             return new Point(posicao.x + acao.dx, posicao.y + acao.dy);
         }
 
         private double getCargaFinanceira() {
-            // Normaliza a carga de moedas no intervalo [0, 1].
+            // C = min(1, moedas / 10): converte a quantidade de moedas em carga
+            // financeira normalizada para a heuristica do banco.
             return Math.min(1.0, numeroMoedas / 10.0);
         }
 
         private double getImunidade() {
+            // Normaliza os ticks de imunidade restantes no intervalo [0, 1].
             return Math.min(1.0, numeroJogadasImunes / (double) Constantes.numeroTICsImunes);
         }
 
         private double getCapacidadeCompraPastilha() {
+            // CapCompra = 1 se o agente pode pagar a pastilha; caso contrario, 0.
             return numeroMoedas >= Constantes.custoPastinha ? 1.0 : 0.0;
         }
 
-        private double getVulnerabilidade() {
-            return 1.0 - getImunidade();
-        }
-
         private double getUrgenciaPastilha() {
-            return getCapacidadeCompraPastilha() * getVulnerabilidade() * getPressaoRisco();
+            // Upast = capacidadeCompra * pressaoRisco.
+            // A pastilha so ganha relevancia quando o agente consegue pagar por ela
+            // e quando o estado atual esta sob pressao de risco.
+            // Se uma dessas duas componentes for 0, a urgencia da pastilha zera.
+            return getCapacidadeCompraPastilha() * getPressaoRisco();
         }
 
         private double getPressaoRisco() {
-            // Usa o pior risco imediato do estado parado como referencia do tick, ja normalizado.
+            // PressaoRisco = max(riscoVisualNorm, riscoOlfativoNorm).
+            // Usa o pior risco imediato do estado como referencia do tick, ja em [0, 1].
             return Math.max(getRiscoVisualNormalizado(ACOES[0]), getRiscoOlfativoNormalizado(ACOES[0]));
-        }
-
-        private double getRelevanciaMoeda() {
-            return Math.max(0.0, (1.0 - getPressaoRisco()) * (1.0 - getUrgenciaBanco()));
         }
 
         private double getUrgenciaBanco() {
             double carga = getCargaFinanceira();
-            // Curva convexa normalizada: carregar mais moedas acelera a vontade de bancar em [0, 1].
+            // Ubanco = (C * (1 + C)) / 2.
+            // Curva crescente em [0, 1]: com poucas moedas o banco pesa pouco;
+            // com muitas moedas a urgencia de depositar aumenta mais rapido.
             return (carga * (1.0 + carga)) / 2.0;
         }
 
@@ -437,7 +483,8 @@ public class Poupador extends ProgramaPoupador {
                 return 1.0;
             }
 
-            // Fora do deposito real, o banco entra como atracao geometrica por distancia Manhattan.
+            // Atracao geometrica global do banco: quanto menor a distancia Manhattan
+            // do destino ao banco, maior o valor retornado.
             Point destino = getPosicaoDestino(acao);
             int distancia = Math.abs(destino.x - Constantes.posicaoBanco.x) + Math.abs(destino.y - Constantes.posicaoBanco.y);
             return 1.0 / (distancia + 1.0);
@@ -448,6 +495,8 @@ public class Poupador extends ProgramaPoupador {
                 return 1.0;
             }
 
+            // Proximidade local do banco: so da bonus quando o destino cai na
+            // vizinhanca curta do banco, para diferenciar "estar perto" de "estar longe".
             Point destino = getPosicaoDestino(acao);
             int distancia = Math.abs(destino.x - Constantes.posicaoBanco.x) + Math.abs(destino.y - Constantes.posicaoBanco.y);
             return distancia <= 2 ? (1.0 / (distancia + 1.0)) : 0.0;
@@ -455,16 +504,20 @@ public class Poupador extends ProgramaPoupador {
 
         private double getObjetivoBanco(Acao acao) {
             if (getBonusDeposito(acao) > 0.0) {
+                // Depositar e o melhor caso possivel da heuristica bancaria.
                 return 1.0;
             }
 
             double progresso = Math.max(0.0, getProgressoBanco(acao));
             double proximidade = getProximidadeLocalBanco(acao);
+            // Obanco(a) = (progresso + proximidade) / 2.
+            // Combina "encurtar o caminho" com "terminar perto do banco" na mesma escala.
             return (progresso + proximidade) / 2.0;
         }
 
         private double getProgressoBanco(Acao acao) {
-            // Mede se a acao encurta o caminho ate a posicao do banco.
+            // Progresso bruto: distanciaAtual - distanciaDestino.
+            // Valor positivo significa que a acao aproximou o agente do banco.
             int distanciaAtual = Math.abs(posicao.x - Constantes.posicaoBanco.x)
                 + Math.abs(posicao.y - Constantes.posicaoBanco.y);
             Point destino = getPosicaoDestino(acao);
@@ -474,11 +527,13 @@ public class Poupador extends ProgramaPoupador {
         }
 
         private double getBonusDeposito(Acao acao) {
-            // O bonus so existe quando a acao realmente aponta para a celula banco.
+            // BonusDeposito(a) = 1 apenas quando a acao tenta entrar na celula banco
+            // com moedas na mao; fora disso, nao ha deposito.
             return isDestinoBanco(acao) && numeroMoedas > 0 ? 1.0 : 0.0;
         }
 
         private boolean isDestinoBanco(Acao acao) {
+            // No motor do jogo, depositar significa mirar a celula banco no campo de visao.
             return !acao.isParado() && visao[acao.indiceVisao] == Constantes.numeroBanco;
         }
 
@@ -491,7 +546,11 @@ public class Poupador extends ProgramaPoupador {
                 }
 
                 int[] offset = OFFSETS_VISAO[i];
-                // Quanto mais a acao se alinha com o alvo visivel, maior a atracao acumulada.
+                // AtracaoBruta(a) = soma_j [ 1 / (d(a, alvo_j) + 1) ].
+                // Cada alvo visivel gera uma parcela individual:
+                // - se a distancia for 0, a contribuicao vale 1.0;
+                // - quanto maior a distancia Manhattan entre a direcao da acao e o alvo,
+                //   menor a contribuicao dessa parcela.
                 int distancia = Math.abs(acao.dx - offset[0]) + Math.abs(acao.dy - offset[1]);
                 atracao += 1.0 / (distancia + 1.0);
             }
@@ -505,6 +564,13 @@ public class Poupador extends ProgramaPoupador {
                 return 0.0;
             }
 
+            // Normalizacao relativa no tick:
+            // atracaoNorm(a) = atracaoBruta(a) / maiorAtracaoDoTick.
+            // Isso coloca a heuristica em escala comparavel com as demais:
+            // - a melhor acao para aquele alvo recebe 1.0;
+            // - as outras ficam entre 0 e 1;
+            // - sem normalizacao, a quantidade de alvos visiveis poderia inflar
+            //   os numeros e distorcer a competicao entre heuristicas.
             return getAtracaoVisivel(acao, tipoAlvo) / maior;
         }
 
@@ -515,29 +581,36 @@ public class Poupador extends ProgramaPoupador {
                 maior = Math.max(maior, getAtracaoVisivel(ACOES[i], tipoAlvo));
             }
 
+            // Serve como denominador da normalizacao: representa a melhor atracao
+            // possivel entre as acoes disponiveis no estado atual.
             return maior;
         }
 
 
         private double calcularRiscoVisual(Acao acao) {
             double risco = 0.0;
-            double vulnerabilidade = getVulnerabilidade();
 
+            // rvis(a) = soma_i [ 1 / max(1, d(a, li)) ]
+            // li e a posicao relativa do ladrão i na visao.
+            // d(a, li) e a distancia Manhattan entre a acao e o ladrão.
             for (int i = 0; i < visao.length; i++) {
                 if (!isLadrao(visao[i])) {
                     continue;
                 }
 
                 int[] offset = OFFSETS_VISAO[i];
-                // Ladrado perto pesa mais; imunidade reduz a exposicao efetiva.
+                // d(a, li) = |dx - lx| + |dy - ly|
+                // Ladrao perto pesa mais na soma do risco visual.
                 int distancia = Math.abs(acao.dx - offset[0]) + Math.abs(acao.dy - offset[1]);
-                risco += vulnerabilidade / Math.max(1.0, distancia);
+                risco += 1.0 / Math.max(1.0, distancia);
             }
 
             return risco;
         }
 
         private double getRiscoVisualNormalizado(Acao acao) {
+            // Rvis(a) = rvis(a) / (1 + rvis(a))
+            // A normalizacao evita que riscos brutos muito altos explodam a escala.
             return normalizarRisco(calcularRiscoVisual(acao));
         }
 
@@ -546,42 +619,33 @@ public class Poupador extends ProgramaPoupador {
                 return false;
             }
 
-            // Primeiro aplica cortes simples por distancia visual ao ladrado.
-            int melhorDistancia = melhorDistanciaVisualSegura();
             int distanciaAcao = menorDistanciaVisual(acao);
 
-            if (melhorDistancia >= 3 && distanciaAcao <= 2) {
-                return true;
+            // Veto duro apenas para ameaca realmente imediata:
+            // se a acao termina adjacente a um ladrão visivel e existe ao menos
+            // uma alternativa admissivel que nao termina adjacente, bloqueamos.
+            if (distanciaAcao > 1) {
+                return false;
             }
-
-            if (melhorDistancia >= 2 && distanciaAcao <= 1) {
-                return true;
-            }
-
-            // Depois compara a acao com a alternativa admissivel de menor risco composto.
-            double melhorRisco = melhorRiscoCompostoSeguro();
-            double riscoAcao = calcularRiscoComposto(acao);
-            return distanciaAcao <= 2 && (riscoAcao - melhorRisco) >= 0.75;
-        }
-
-        private int melhorDistanciaVisualSegura() {
-            int melhor = Integer.MIN_VALUE;
 
             for (int i = 0; i < ACOES.length; i++) {
                 Acao candidata = ACOES[i];
-                if (!isDestinoValido(candidata)) {
+                if (candidata == acao || !isDestinoValido(candidata)) {
                     continue;
                 }
 
-                melhor = Math.max(melhor, menorDistanciaVisual(candidata));
+                if (menorDistanciaVisual(candidata) > 1) {
+                    return true;
+                }
             }
 
-            return melhor == Integer.MIN_VALUE ? Integer.MAX_VALUE : melhor;
+            return false;
         }
 
         private int menorDistanciaVisual(Acao acao) {
             int menor = Integer.MAX_VALUE;
 
+            // Resume a ameaca visual imediata da acao pela menor distancia a qualquer ladrão.
             for (int i = 0; i < visao.length; i++) {
                 if (!isLadrao(visao[i])) {
                     continue;
@@ -595,29 +659,13 @@ public class Poupador extends ProgramaPoupador {
             return menor;
         }
 
-        private double melhorRiscoCompostoSeguro() {
-            double melhor = Double.POSITIVE_INFINITY;
-
-            for (int i = 0; i < ACOES.length; i++) {
-                Acao candidata = ACOES[i];
-                if (!isDestinoValido(candidata)) {
-                    continue;
-                }
-
-                melhor = Math.min(melhor, calcularRiscoComposto(candidata));
-            }
-
-            return Double.isInfinite(melhor) ? Double.POSITIVE_INFINITY : melhor;
-        }
-
-        private double calcularRiscoComposto(Acao acao) {
-            // O olfato entra como desempate mais fraco que a visao.
-            return calcularRiscoVisual(acao) + (0.5 * calcularRiscoOlfativo(acao));
-        }
 
         private double calcularRiscoOlfativo(Acao acao) {
             double risco = 0.0;
 
+            // rolf(a) = soma_i [ Oi / (d(a, oi) + 1) ]
+            // oi e a posicao relativa da marca de olfato i.
+            // Oi e a intensidade da marca, calculada a partir do valor lido no sensor.
             for (int i = 0; i < olfatoLadrao.length; i++) {
                 double intensidade = intensidadeOlfato(olfatoLadrao[i]);
                 if (intensidade == 0.0) {
@@ -625,6 +673,7 @@ public class Poupador extends ProgramaPoupador {
                 }
 
                 int[] offset = OFFSETS_OLFATO[i];
+                // d(a, oi) = |dx - ox| + |dy - oy|
                 // O cheiro e tratado como risco difuso de curto alcance.
                 int distancia = Math.abs(acao.dx - offset[0]) + Math.abs(acao.dy - offset[1]);
                 risco += intensidade / (distancia + 1.0);
@@ -634,14 +683,22 @@ public class Poupador extends ProgramaPoupador {
         }
 
         private double getRiscoOlfativoNormalizado(Acao acao) {
+            // Rolf(a) = rolf(a) / (1 + rolf(a))
+            // Mantem a contribuicao olfativa na mesma escala da visual.
             return normalizarRisco(calcularRiscoOlfativo(acao));
         }
 
         private double getEstagnacaoNormalizada() {
+            // estagnacaoNorm = permanencias / (permanencias + 1).
+            // Cresce com a repeticao, mas satura abaixo de 1.0:
+            // - no inicio a punicao sobe rapido;
+            // - depois continua aumentando, mas sem explodir numericamente.
             return permanenciasConsecutivas <= 0 ? 0.0 : permanenciasConsecutivas / (permanenciasConsecutivas + 1.0);
         }
 
         private double normalizarRisco(double risco) {
+            // Funcao de normalizacao:
+            // N(r) = r / (1 + r), com imagem em [0, 1).
             return risco <= 0.0 ? 0.0 : risco / (1.0 + risco);
         }
     }

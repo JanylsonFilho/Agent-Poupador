@@ -112,7 +112,7 @@ Se o log mostra:
 isso significa:
 
 - a celula em si nao e proibida;
-- mas ir para la deixa o poupador em uma faixa de captura que poderia ser evitada;
+- mas ir para la termina em ameaca imediata de ladrão, existindo alternativa admissivel mais segura;
 - por isso a acao foi bloqueada.
 
 ## 6. Heuristica De Seguranca
@@ -127,7 +127,7 @@ Ele usa:
 Formula:
 
 ```text
-seguranca = -(0.55 * riscoVisualNorm) - (0.25 * riscoOlfativoNorm)
+seguranca = -(0.30 * riscoVisualNorm) - (0.15 * riscoOlfativoNorm)
 ```
 
 Quanto maior o risco, mais negativo fica o score.
@@ -144,10 +144,22 @@ rOlfNorm=0.000
 entao a parcela de seguranca fica:
 
 ```text
-seg = -(0.55 * 0.5) - (0.25 * 0.0) = -0.275
+seg = -(0.30 * 0.5) - (0.15 * 0.0) = -0.150
 ```
 
 O valor absoluto caiu bastante em relacao a versao antiga, porque agora o objetivo e manter custo e beneficio em escalas comparaveis.
+
+### Observacao importante
+
+Nesta versao, a imunidade nao participa mais do calculo do risco visual.
+
+Ou seja, o risco visual bruto ficou conceitualmente assim:
+
+```text
+rvis(a) = soma_i [ 1 / max(1, d(a, li)) ]
+```
+
+Isso simplifica a explicacao matematica da heuristica e deixa a seguranca mais conservadora: o agente passa a tratar estados imunes e nao imunes com o mesmo risco visual heuristico.
 
 ## 7. Heuristica Do Banco
 
@@ -161,7 +173,7 @@ Ela depende de:
 Formula:
 
 ```text
-banco = 0.45 * urgenciaBanco * objetivoBanco
+banco = 0.22 * urgenciaBanco * objetivoBanco
 ```
 
 Onde:
@@ -200,10 +212,10 @@ Se:
 entao:
 
 ```text
-ban = 0.45 * 0.8 * 1.0 = 0.36
+ban = 0.22 * 0.8 * 1.0 = 0.176
 ```
 
-Ou seja, depositar continua sendo uma acao muito forte, mas sem usar numeros magicos grandes.
+Ou seja, depositar continua sendo uma acao forte, mas agora em escala compativel com as demais heuristicas.
 
 ## 8. Heuristica De Moeda
 
@@ -212,26 +224,27 @@ O metodo `heuristicaMoeda()` esta em [src/agente/Poupador.java:137](/home/janyls
 Formula:
 
 ```text
-moeda = 0.35 * relevanciaMoeda * atracaoVisivelMoedaNorm
+moeda = 0.18 * atracaoVisivelMoedaNorm
 ```
 
 Ela fica mais forte quando:
 
 - ha moedas visiveis;
-- o risco nao esta alto;
-- a urgencia do banco nao esta dominando.
+- a acao esta mais alinhada com essas moedas do que as alternativas.
 
-`getRelevanciaMoeda()` em [src/agente/Poupador.java:320](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:320) agora ficou assim:
+Nesta versao, a heuristica de moeda foi simplificada para medir apenas atracao por moedas visiveis.
 
-```text
-relevanciaMoeda = (1 - pressaoRisco) * (1 - urgenciaBanco)
-```
+Ou seja:
 
-Isso significa:
+- risco continua sendo responsabilidade da heuristica de seguranca;
+- urgencia de retorno continua sendo responsabilidade da heuristica do banco;
+- a heuristica de moeda mede apenas o quanto a acao aponta para moedas.
 
-- banco urgente reduz a forca da moeda;
-- risco alto tambem reduz a forca da moeda;
-- a atracao visivel da moeda e normalizada pela melhor opcao do tick.
+A atracao visivel da moeda e normalizada pela melhor opcao do tick. Assim:
+
+- a melhor acao para moeda recebe valor `1.0`;
+- as outras recebem um valor proporcional em `0..1`;
+- se nao houver moeda visivel, a heuristica vira `0`.
 
 ## 9. Heuristica De Pastilha
 
@@ -240,14 +253,25 @@ O metodo `heuristicaPastilha()` esta em [src/agente/Poupador.java:141](/home/jan
 Formula:
 
 ```text
-pastilha = 0.20 * urgenciaPastilha * atracaoVisivelPastilhaNorm
+pastilha = 0.08 * urgenciaPastilha * atracaoVisivelPastilhaNorm
 ```
 
 Ela so fica forte quando:
 
 - o agente consegue comprar pastilha;
-- esta vulneravel;
 - o risco esta alto.
+
+Nesta versao, a urgencia da pastilha foi simplificada para:
+
+```text
+urgenciaPastilha = capacidadeCompraPastilha * pressaoRisco
+```
+
+Isso significa:
+
+- se o agente nao pode pagar, a heuristica de pastilha zera;
+- se o agente pode pagar e o risco sobe, a heuristica cresce;
+- a explicacao fica mais direta, sem depender de vulnerabilidade ou imunidade.
 
 ## 10. Penalidade De Estagnacao
 
@@ -426,13 +450,13 @@ Nesta versao, foi simplificada para operar com:
 
 Controla coleta de moedas visiveis.
 
-Agora usa atracao visivel normalizada pela melhor opcao do tick.
+Agora mede apenas atracao visivel normalizada pela melhor opcao do tick.
 
 ### `heuristicaPastilha()` - [linha 121](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:121)
 
 Controla compra/uso indireto de pastilha sob pressao.
 
-Tambem usa atracao visivel normalizada.
+Usa urgencia baseada em capacidade de compra e pressao de risco, alem de atracao visivel normalizada.
 
 ### `heuristicaEstagnacao()` - [linha 126](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:126)
 
@@ -466,10 +490,6 @@ Importante:
 - banco como celula-alvo especial e valido aqui;
 - pastilha sem dinheiro e invalida.
 
-### `getRelevanciaMoeda()` - [linha 320](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:320)
-
-Escala o valor de perseguir moeda.
-
 ### `getUrgenciaBanco()` - [linha 326](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:326)
 
 Traduz carga financeira em urgencia de retorno ao banco, agora em escala `0..1`.
@@ -493,6 +513,8 @@ Transforma a atracao por moeda ou pastilha em valor relativo no intervalo `0..1`
 
 Mede risco vindo de ladroes visiveis.
 
+Nesta versao, ele depende apenas da distancia relativa aos ladroes visiveis, sem multiplicar por imunidade.
+
 ### `getRiscoVisualNormalizado()` e `getRiscoOlfativoNormalizado()`
 
 Convertem risco bruto para escala `0..1` usando:
@@ -507,16 +529,14 @@ Implementa a seguranca dura.
 
 Ela bloqueia acoes que:
 
-- deixam o agente em distancia visual muito ruim;
-- ou deixam risco composto muito pior que a melhor alternativa.
+- terminam adjacentes a um ladrão visivel;
+- desde que exista outra acao admissivel que nao termine adjacente.
 
-### `calcularRiscoComposto()` - [linha 443](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:443)
+Ou seja:
 
-Combina visual e olfativo:
-
-```text
-riscoComposto = riscoVisual + 0.5 * riscoOlfativo
-```
+- ameaca de 1 passo pode virar `-INF`;
+- ameaca de 2 passos nao e mais veto duro;
+- risco mais distante fica por conta da `heuristicaSeguranca()`, nao da admissibilidade.
 
 ## 16. Leitura Final
 
