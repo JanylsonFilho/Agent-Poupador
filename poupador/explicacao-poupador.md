@@ -318,43 +318,57 @@ Isso foi uma mudanca importante: antes `PARADO` era injetado por fora; agora ele
 
 ## 12. Conversao De Score Em Peso
 
-O metodo `converterScoresEmPesos()` esta em [src/agente/Poupador.java:154](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:154).
+O metodo `converterScoresEmPesos()` esta em [src/agente/Poupador.java:176](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:176).
 
-Ele faz um softmax simplificado:
+Hoje o codigo nao usa `softmax`.
 
-```text
-peso = exp(score - maiorScore)
-```
-
-Depois normaliza a soma para 1.
-
-### Por que subtrair `maiorScore`
-
-Para evitar explosao numerica.
-
-Se os scores forem:
-
-- `2`
-- `1`
-- `-3`
-
-o codigo usa:
+Ele faz uma roleta linear por deslocamento:
 
 ```text
-exp(2-2), exp(1-2), exp(-3-2)
+pesoBruto(a) = score(a) - menorScoreValido + EPSILON
 ```
 
-ou seja:
+Depois normaliza:
 
 ```text
-exp(0), exp(-1), exp(-5)
+pesoFinal(a) = pesoBruto(a) / somaDosPesosBrutos
 ```
 
-que e numericamente estavel.
+### Por que subtrair `menorScoreValido`
+
+Para garantir que todos os pesos brutos das acoes validas fiquem nao negativos e preservem a ordem de preferencia.
+
+Na pratica:
+
+- a pior acao valida fica com peso quase zero;
+- a melhor acao valida fica com o maior peso bruto;
+- acoes com `-INF` recebem peso `0` e nao entram na roleta.
+
+Se os scores validos forem:
+
+- `-0.4`
+- `0.1`
+- `0.5`
+
+entao:
+
+```text
+menorScoreValido = -0.4
+```
+
+e os pesos brutos ficam:
+
+```text
+(-0.4 - -0.4) + EPSILON = EPSILON
+( 0.1 - -0.4) + EPSILON = 0.5 + EPSILON
+( 0.5 - -0.4) + EPSILON = 0.9 + EPSILON
+```
+
+Depois disso, o metodo divide cada peso bruto pela soma total para produzir a distribuicao final da roleta.
 
 ## 13. Sorteio Final
 
-O metodo `sortear()` esta em [src/agente/Poupador.java:189](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:189).
+O metodo `sortear()` esta em [src/agente/Poupador.java:223](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:223).
 
 Ele faz roleta:
 
@@ -366,7 +380,7 @@ Entao o agente continua probabilistico, mas dentro do conjunto de acoes que o mo
 
 ## 14. Como O Log Deve Ser Lido
 
-O log gerado em `logDecisao()` em [src/agente/Poupador.java:203](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:203) mostra:
+O log gerado em `logDecisao()` em [src/agente/Poupador.java:238](/home/janylson/Documentos/GITHUB/Agent-Poupador/poupador/src/agente/Poupador.java:238) mostra:
 
 - `score`: score final da acao;
 - `peso`: probabilidade final na roleta;
